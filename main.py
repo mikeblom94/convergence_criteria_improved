@@ -89,6 +89,10 @@ class ConvergenceAnalyzer:
         times = np.array(times)
         values = np.array(values)
 
+        # Need at least 4 points for filtering
+        if len(times) < 4:
+            return None, None, values
+
         # Calculate sampling frequency if not provided
         if sampling_freq is None:
             # Estimate from average time step
@@ -96,30 +100,35 @@ class ConvergenceAnalyzer:
             sampling_freq = 1.0 / dt
 
         # Apply a low-pass filter to isolate the low-frequency component
-        nyquist = 0.5 * sampling_freq
-        normalized_cutoff = cutoff_freq / nyquist
-        b, a = signal.butter(4, normalized_cutoff, btype='low')
-        filtered_data = signal.filtfilt(b, a, values)
+        try:
+            nyquist = 0.5 * sampling_freq
+            normalized_cutoff = cutoff_freq / nyquist
+            b, a = signal.butter(4, normalized_cutoff, btype='low')
+            filtered_data = signal.filtfilt(b, a, values)
+
+            import matplotlib.pyplot as plt
+
+            # Plot
+            plt.figure(figsize=(10, 5))
+            plt.plot(times, filtered_data, marker='o', linestyle='-')
+            # Labels and title
+            plt.xlabel('Time')
+            plt.ylabel('Oscillation Value')
+            plt.title('Oscillation filtered data Over Time')
+            plt.grid(True)
+            # Show plot
+            plt.show()
+
+        except Exception as e:
+            print(f"Warning: Filtering failed: {e}")
+            return None, None, values
 
         # Find zero crossings to identify oscillations (centered around mean)
         zero_crossings = np.where(np.diff(np.signbit(filtered_data - np.mean(filtered_data))))[0]
-
+        print(f"Zero crossings: {zero_crossings}")
         # If we don't find enough zero crossings for a full oscillation, try peak detection
         if len(zero_crossings) < 3:  # Need at least 3 crossings for a full oscillation
-            peaks, _ = signal.find_peaks(filtered_data)
-            valleys, _ = signal.find_peaks(-filtered_data)
-
-            # Combine and sort peaks and valleys
-            all_extrema = np.sort(np.concatenate((peaks, valleys)))
-
-            if len(all_extrema) < 2:
-                # Not enough features to identify an oscillation
-                return None, None, filtered_data
-
-            # Look for the last full oscillation
-            # A simple approach: take the last two extrema
-            start_idx = all_extrema[-2]
-            end_idx = all_extrema[-1]
+            return None, None, filtered_data
         else:
             # Use zero crossings to identify a full oscillation
             # For a simple sine wave, a full oscillation requires 3 zero crossings
@@ -155,6 +164,21 @@ class ConvergenceAnalyzer:
         # Detect oscillation
         start_idx, end_idx, filtered_data = self.detect_oscillation(times, values, sampling_freq, cutoff_freq)
 
+        if start_idx:
+            import matplotlib.pyplot as plt
+
+            # Plot
+            plt.figure(figsize=(10, 5))
+            plt.plot(times[start_idx:end_idx], values[start_idx:end_idx], marker='o', linestyle='-')
+            # Labels and title
+            plt.xlabel('Time')
+            plt.ylabel('Oscillation Value')
+            plt.title('Oscillation Values Over Time')
+            plt.grid(True)
+            # Show plot
+            plt.show()
+            print("hi")
+
         # Initialize statistics dictionary
         stats = {}
 
@@ -167,16 +191,39 @@ class ConvergenceAnalyzer:
         oscillation_values = values[start_idx:end_idx + 1]
 
         # Mean using trapezoidal integration for better accuracy
-        mean = np.trapz(oscillation_values, x=oscillation_times) / (oscillation_times[-1] - oscillation_times[0])
+        # Note: use trapezoid instead of trapz to avoid deprecation warning
+        try:
+            from scipy import integrate
+            mean = integrate.trapezoid(oscillation_values, x=oscillation_times) / (oscillation_times[-1] - oscillation_times[0])
+        except ImportError:
+            # Fallback to numpy if scipy.integrate is not available
+            mean = np.trapz(oscillation_values, x=oscillation_times) / (oscillation_times[-1] - oscillation_times[0])
 
         # Standard deviation over the oscillation
         std = np.std(oscillation_values, ddof=1)
+
+        import matplotlib.pyplot as plt
+
+        # Plot
+        plt.figure(figsize=(10, 5))
+        plt.plot(oscillation_times, oscillation_values, marker='o', linestyle='-')
+        # Labels and title
+        plt.xlabel('Time')
+        plt.ylabel('Oscillation Value')
+        plt.title('Oscillation Values Over Time')
+        plt.grid(True)
+        # Show plot
+        plt.show()
 
         # Calculate slope over the entire dataset for trend analysis
         # We use the entire dataset to see the overall trend, not just the oscillation
         lineregress = np.polyfit(times, values, 1)
         slope = lineregress[0]
         diff_height = slope * (times[-1] - times[0])
+
+        # Store filtered data along with the times that correspond to it
+        # This way we can properly plot it later
+        filtered_times = times
 
         # Assemble statistics
         stats = {
@@ -188,8 +235,10 @@ class ConvergenceAnalyzer:
             'end': oscillation_times[-1],
             'cut_times': oscillation_times,
             'cut_values': oscillation_values,
+            'filtered_times': filtered_times,
             'filtered_data': filtered_data,
-            'used_oscillation_detection': True
+            'used_oscillation_detection': True,
+            'cutoff_freq': cutoff_freq
         }
 
         return stats
@@ -263,10 +312,10 @@ class ConvergenceAnalyzer:
         }
 
     def check_convergence(self, quantity, times, values, start_time,
-                          limit_std_dev, limit_diff_he, interval, relative=True,
-                          detect_oscillations=False, cutoff_freq=0.2):
+                          limit_std_dev, limit_diff_he, base_interval, relative=True,
+                          detect_oscillations=False, cutoff_freq=0.2, attempt_number=0):
         """
-        Check if a quantity meets convergence criteria
+        Check if a quantity meets convergence criteria with progressive interval expansion
 
         Parameters:
         -----------
@@ -282,32 +331,59 @@ class ConvergenceAnalyzer:
             Standard deviation limit for convergence
         limit_diff_he : float
             Slope/height difference limit for convergence
-        interval : float
-            Time interval to use for analysis
+        base_interval : float
+            Base time interval to use for analysis
         relative : bool
             Whether to use relative criteria (percentage of mean)
         detect_oscillations : bool
             Whether to use oscillation detection
         cutoff_freq : float
             Cutoff frequency for low-pass filtering
+        attempt_number : int
+            Current attempt number (determines interval multiplier)
 
         Returns:
         --------
-        tuple : (converged, stats)
-            Boolean indicating convergence and statistics dictionary
+        tuple : (converged, stats, oscillation_detected)
+            Boolean indicating convergence, statistics dictionary, and boolean indicating if oscillation was detected
         """
         # Skip if not enough data or haven't reached start time
         if len(times) < 10 or times[-1] < start_time:
-            return False, None
+            return False, None, False
+
+        # Calculate the current interval based on attempt number
+        # First attempt uses base_interval, each subsequent attempt adds base_interval
+        current_interval = base_interval * (attempt_number + 1)
 
         # Define analysis window
         end = times[-1]
-        start = max(start_time, end - interval)
+        start = start_time
 
-        # Calculate statistics with or without oscillation detection
-        stats = self.statistic(times, values, start, end, detect_oscillations, cutoff_freq)
+        # Skip if window is too small
+        if end - start < base_interval / 2:
+            return False, None, False
+
+        # Try oscillation detection if requested
+        oscillation_detected = False
+        if detect_oscillations:
+            try:
+                osc_stats = self.calculate_oscillation_statistics(times, values, cutoff_freq=cutoff_freq)
+                if osc_stats is not None:
+                    stats = osc_stats
+                    oscillation_detected = True
+                    # Don't print here, let the calling function handle logging
+                else:
+                    # Not enough info to detect oscillation
+                    return False, None, False
+            except Exception as e:
+                # Error in oscillation detection
+                return False, None, False
+        else:
+            # Standard method - always use current window size
+            stats = self.statistic(times, values, start, end, detect_oscillations=False)
+
         if stats is None:
-            return False, None
+            return False, None, oscillation_detected
 
         # Store results for this quantity
         self.results[quantity] = stats
@@ -335,26 +411,14 @@ class ConvergenceAnalyzer:
         stats['converged'] = converged
         stats['limit_std_dev'] = limit_std_dev
         stats['limit_diff_he'] = limit_diff_he
+        stats['interval_used'] = current_interval
+        stats['attempt_number'] = attempt_number
 
-        return converged, stats
+        return converged, stats, oscillation_detected
 
     def analyze_convergence_multi_quantity(self, data_dict, tasks, required_convergence=None):
         """
-        Analyze convergence across multiple quantities based on specified requirements
-
-        Parameters:
-        -----------
-        data_dict : dict
-            Dictionary mapping quantity names to (times, values) tuples
-        tasks : list of dict
-            List of task configurations
-        required_convergence : dict, optional
-            Dictionary specifying which quantities need to converge for each task
-            e.g., {'largeTimeStep': ['Fx'], 'propulsionVariation': ['Fx', 'WFT'], 'final': ['Fx', 'WFT']}
-
-        Returns:
-        --------
-        dict : Results of the analysis for each quantity
+        Analyze convergence across multiple quantities with properly implemented progressive interval
         """
         if required_convergence is None:
             # Default: each task requires convergence of all quantities analyzed
@@ -368,8 +432,15 @@ class ConvergenceAnalyzer:
         # Track quantities that have converged for each task
         converged_quantities = defaultdict(set)
 
+        # Track oscillation detection attempts and last check times
+        oscillation_attempts = defaultdict(lambda: defaultdict(int))
+        last_check_times = defaultdict(lambda: defaultdict(float))
+
+        # For each task, we'll store the actual data range
+        actual_task_ranges = {}
+
         # Process each task in sequence
-        for task in tasks:
+        for task_index, task in enumerate(tasks):
             task_name = task.get('name', 'unknown')
             max_time = task.get('max_time', 0.0)
 
@@ -383,9 +454,14 @@ class ConvergenceAnalyzer:
                     "type": "start",
                     "task": task_name
                 })
+                # Initialize last check time to start time
+                last_check_times[task_name][quantity] = current_time
 
             # Default end time
             end_time = current_time + max_time if max_time else current_time
+
+            # Store the initial task range
+            actual_task_ranges[task_name] = {"start": current_time, "end": end_time}
 
             # Special handling for reduceTimeStep (just a transition, not a convergence check)
             if task_name == "reduceTimeStep":
@@ -397,6 +473,10 @@ class ConvergenceAnalyzer:
                 # Get the required quantities for this task
                 required_quantities = required_convergence.get(task_name, list(data_dict.keys()))
                 print(f"  Required quantities for convergence: {required_quantities}")
+
+                # Flag to track if any quantity converged
+                task_converged = False
+                convergence_time = None
 
                 # Check each quantity for convergence
                 for quantity, (times, values) in data_dict.items():
@@ -413,13 +493,13 @@ class ConvergenceAnalyzer:
                     print(f"  Checking {quantity} using {detection_method}:")
                     print(f"    - Standard deviation limit: {task['std_limit']}%")
                     print(f"    - Slope limit: {task['slope_limit']}%")
-                    print(f"    - Interval: {task['interval']} s")
+                    print(f"    - Base interval: {task['interval']} s")
 
                     if use_oscillation:
                         print(f"    - Oscillation cutoff frequency: {cutoff_freq} Hz")
 
                     # Get data points in the task time range
-                    task_mask = times >= current_time
+                    task_mask = (times >= current_time) & (times <= end_time)
                     if not np.any(task_mask):
                         print(f"    No data points for {quantity} in this time range")
                         continue
@@ -427,57 +507,119 @@ class ConvergenceAnalyzer:
                     task_times = times[task_mask]
                     task_values = values[task_mask]
 
-                    # Check each time point for convergence
+                    # Initialize convergence flag
+                    quantity_converged = False
+
+                    # Get current attempt count and base interval
+                    attempt = oscillation_attempts[task_name][quantity]
+                    base_interval = task['interval']
+
+                    # Calculate the current interval size based on attempt
+                    current_interval = base_interval * (attempt + 1)
+
+                    # Main convergence check loop - go through data
+                    last_time = 0
                     for i in range(len(task_times)):
-                        if task_times[i] > end_time:
-                            break
+                        check_time = task_times[i]
 
-                        check_end = task_times[i]
-                        check_start = max(current_time, check_end - task['interval'])
-
-                        # Skip if window is too small
-                        if check_end - check_start < task['interval'] / 2:
+                        # Skip data points we've already processed
+                        if check_time <= last_check_times[task_name][quantity]:
                             continue
 
+                        # Only check convergence when we have enough data since last check
+                        # This is key - we need at least one full interval since last check
+                        if check_time < last_check_times[task_name][quantity] + current_interval:
+                            continue
+
+                        last_time = check_time
+
+                        # Log attempt info
+                        print(f"    Checking convergence at t={check_time:.2f}s with interval={current_interval:.2f}s (attempt #{attempt + 1})")
+
                         # Run convergence check
-                        converged, stats = self.check_convergence(
+                        converged, stats, oscillation_detected = self.check_convergence(
                             quantity,
-                            task_times[:i + 1],
+                            task_times[:i + 1],  # All data up to this point
                             task_values[:i + 1],
-                            current_time,
+                            current_time,  # Start time remains the task start
                             task['std_limit'],
                             task['slope_limit'],
-                            task['interval'],
+                            base_interval,  # Pass the base interval
                             relative=True,
                             detect_oscillations=use_oscillation,
-                            cutoff_freq=cutoff_freq
+                            cutoff_freq=cutoff_freq,
+                            attempt_number=attempt
                         )
 
-                        if converged:
-                            detection_info = "oscillation detection" if stats.get('used_oscillation_detection', False) else "fixed interval"
-                            print(f"    {quantity} converged at: {check_end} using {detection_info}")
-                            print(f"    Stats: mean={stats['mean']:.2f}, std={stats['std_relative']:.4f}%, slope={stats['diff_height_relative']:.4f}%")
+                        # Update last check time
+                        last_check_times[task_name][quantity] = check_time
 
-                            # Record the convergence
-                            all_transitions[quantity].append({
-                                "time": check_end,
-                                "type": "converge",
-                                "task": task_name,
-                                "stats": stats,
-                                "detection_method": detection_info
-                            })
+                        # Handle oscillation detection outcome
+                        if use_oscillation:
+                            if oscillation_detected:
+                                # Success! Check convergence criteria
+                                if converged:
+                                    # Quantity has converged
+                                    quantity_converged = True
+                                    detection_info = "oscillation detection"
+                                    interval_used = stats.get('interval_used', current_interval)
 
-                            # Mark this quantity as converged for this task
-                            converged_quantities[task_name].add(quantity)
-                            task_convergence[task_name][quantity] = check_end
+                                    print(f"    {quantity} converged at: {check_time} using {detection_info} (interval: {interval_used:.2f}s)")
+                                    print(f"    Stats: mean={stats['mean']:.2f}, std={stats['std_relative']:.4f}%, slope={stats['diff_height_relative']:.4f}%")
 
-                            break
-                    else:
-                        print(f"    {quantity} did not converge before max_time")
+                                    # Record convergence
+                                    all_transitions[quantity].append({
+                                        "time": check_time,
+                                        "type": "converge",
+                                        "task": task_name,
+                                        "stats": stats,
+                                        "detection_method": detection_info
+                                    })
 
-                # Determine if the task is done based on required convergence
-                task_converged = False
+                                    # Mark as converged
+                                    converged_quantities[task_name].add(quantity)
+                                    task_convergence[task_name][quantity] = check_time
+                                    break
+                                else:
+                                    print(f"    Oscillation detected but convergence criteria not met, continuing to next time point")
+                            else:
+                                # Failed to detect oscillation with current interval size
+                                print(f"    Failed to detect oscillation with interval={current_interval:.2f}s, incrementing attempt counter")
+                                oscillation_attempts[task_name][quantity] += 1
+                        else:
+                            # Standard fixed-interval method
+                            if converged:
+                                quantity_converged = True
+                                detection_info = "fixed interval"
 
+                                print(f"    {quantity} converged at: {check_time} using {detection_info}")
+                                print(f"    Stats: mean={stats['mean']:.2f}, std={stats['std_relative']:.4f}%, slope={stats['diff_height_relative']:.4f}%")
+
+                                # Record convergence
+                                all_transitions[quantity].append({
+                                    "time": check_time,
+                                    "type": "converge",
+                                    "task": task_name,
+                                    "stats": stats,
+                                    "detection_method": detection_info
+                                })
+
+                                # Mark as converged
+                                converged_quantities[task_name].add(quantity)
+                                task_convergence[task_name][quantity] = check_time
+                                break
+
+                    # End of time loop for this quantity
+                    if not quantity_converged:
+                        print(f"    {quantity} did not converge during {task_name}")
+
+                    # Reset attempt counter for next task
+                    if task_index < len(tasks) - 1:
+                        next_task = tasks[task_index + 1]['name']
+                        oscillation_attempts[next_task][quantity] = 0
+                        last_check_times[next_task][quantity] = 0
+
+                # Determine if the task is completely converged
                 # For largeTimeStep, only check Fx
                 if task_name == "largeTimeStep":
                     task_converged = "Fx" in converged_quantities[task_name]
@@ -487,7 +629,7 @@ class ConvergenceAnalyzer:
                     else:
                         print(f"  Task {task_name} did not converge (Fx not converged)")
 
-                # For propulsionVariation/final, check if both required quantities converged
+                # For propulsionVariation/final, check if all required quantities converged
                 elif task_name in ["propulsionVariation", "final"]:
                     # Implement AND logic - all required quantities must converge
                     if all(qty in converged_quantities[task_name] for qty in required_quantities):
@@ -512,27 +654,55 @@ class ConvergenceAnalyzer:
                     else:
                         print(f"  Task {task_name} did not converge (not all required quantities converged)")
 
-                # Update end time if task converged
+                # If task converged, immediately transition to next task
                 if task_converged:
-                    end_time = convergence_time
+                    print(f"  Task {task_name} converged early at {convergence_time}, skipping ahead to next task")
 
-            # Update time for next task
-            if max_time or task_name == "reduceTimeStep":
+                    # Update the actual end time for this task
+                    actual_task_ranges[task_name]["end"] = convergence_time
+
+                    # Record task end for each quantity at convergence time
+                    for quantity in data_dict.keys():
+                        converged = quantity in converged_quantities[task_name]
+                        all_transitions[quantity].append({
+                            "time": convergence_time,
+                            "type": "end",
+                            "task": task_name,
+                            "reason": "converged" if converged else "task_converged"
+                        })
+
+                    # Update current time to convergence time for next task
+                    current_time = convergence_time
+                else:
+                    # Task didn't converge, continue to max time
+                    current_time = end_time
+
+                    # Record task end for each quantity at max time
+                    for quantity in data_dict.keys():
+                        converged = quantity in converged_quantities[task_name]
+                        all_transitions[quantity].append({
+                            "time": end_time,
+                            "type": "end",
+                            "task": task_name,
+                            "reason": "converged" if converged else "max_time"
+                        })
+            else:
+                # For tasks without convergence checking, just update the time
                 current_time = end_time
 
                 # Record task end for each quantity
                 for quantity in data_dict.keys():
-                    converged = quantity in converged_quantities[task_name]
                     all_transitions[quantity].append({
                         "time": end_time,
                         "type": "end",
                         "task": task_name,
-                        "reason": "converged" if converged else "max_time"
+                        "reason": "completed"
                     })
 
-        return all_transitions
+        # This return statement is now correctly outside the for loop
+        return all_transitions, actual_task_ranges
 
-    def plot_multi_quantity_results(self, data_dict, all_transitions, output_prefix="convergence", shared_x_range=True):
+    def plot_multi_quantity_results(self, data_dict, all_transitions, actual_task_ranges, output_prefix="convergence", shared_x_range=True):
         """
         Create visualizations for multiple quantities
 
@@ -542,6 +712,8 @@ class ConvergenceAnalyzer:
             Dictionary mapping quantity names to (times, values) tuples
         all_transitions : dict
             Dictionary mapping quantity names to transitions lists
+        actual_task_ranges : dict
+            Dictionary mapping task names to their actual time ranges
         output_prefix : str, optional
             Prefix for output files
         shared_x_range : bool, optional
@@ -565,7 +737,7 @@ class ConvergenceAnalyzer:
             transitions = all_transitions[quantity]
 
             self.plot_single_quantity(
-                quantity, times, values, transitions,
+                quantity, times, values, transitions, actual_task_ranges,
                 f"{output_prefix}_{quantity.lower()}.png",
                 x_range=(global_min_time, global_max_time) if shared_x_range else None
             )
@@ -612,8 +784,45 @@ class ConvergenceAnalyzer:
         ax1.plot(times, values, 'b-', alpha=0.5, label='Raw data')
 
         # If filtered data is available, plot it
+        # Only use the portion of times that corresponds to the detected oscillation
         if 'filtered_data' in stats:
-            ax1.plot(times, stats['filtered_data'], 'g-', label='Filtered data')
+            # Make sure we're only plotting the filtered data for the range we analyzed
+            # This fixes the dimension mismatch error
+            try:
+                if 'begin' in stats and 'end' in stats:
+                    begin = stats['begin']
+                    end = stats['end']
+
+                    # Find indices corresponding to oscillation window
+                    window_mask = (times >= begin) & (times <= end)
+                    window_times = times[window_mask]
+                    window_values = values[window_mask]
+
+                    # Apply filtering to this window only
+                    if len(window_times) > 4:  # Minimum length for filtering
+                        # Calculate sampling frequency based on this window
+                        dt = np.mean(np.diff(window_times))
+                        sampling_freq = 1.0 / dt
+
+                        # Get cutoff frequency (use same as in original detection)
+                        cutoff_freq = 0.2  # Default value
+                        if 'cutoff_freq' in stats:
+                            cutoff_freq = stats['cutoff_freq']
+
+                        # Apply filter to window
+                        nyquist = 0.5 * sampling_freq
+                        normalized_cutoff = cutoff_freq / nyquist
+                        b, a = signal.butter(4, normalized_cutoff, btype='low')
+                        window_filtered = signal.filtfilt(b, a, window_values)
+
+                        # Plot filtered data for window
+                        ax1.plot(window_times, window_filtered, 'g-', label='Filtered data')
+
+                # If we have stored filtered data with times, use that
+                elif 'filtered_times' in stats and len(stats['filtered_times']) == len(stats['filtered_data']):
+                    ax1.plot(stats['filtered_times'], stats['filtered_data'], 'g-', label='Filtered data')
+            except Exception as e:
+                print(f"Warning: Could not plot filtered data: {e}")
 
         # Highlight the oscillation window
         begin = stats['begin']
@@ -663,7 +872,7 @@ class ConvergenceAnalyzer:
 
         plt.close(fig)
 
-    def plot_single_quantity(self, quantity, times, values, transitions, output_file=None, x_range=None):
+    def plot_single_quantity(self, quantity, times, values, transitions, actual_task_ranges, output_file=None, x_range=None):
         """
         Create visualization for a single quantity
 
@@ -677,6 +886,8 @@ class ConvergenceAnalyzer:
             Data values
         transitions : list
             Transitions for this quantity
+        actual_task_ranges : dict
+            Dictionary mapping task names to their actual time ranges
         output_file : str, optional
             Path to save the plot
         x_range : tuple, optional
@@ -690,23 +901,19 @@ class ConvergenceAnalyzer:
         # Set title with quantity name
         ax1.set_title(f"{quantity} - OpenFOAM Convergence Analysis")
 
-        # Add colored regions for tasks
+        # Add colored regions for tasks based on actual ranges
         task_colors = plt.cm.tab10.colors
         color_idx = 0
-        task_starts = {}
 
-        # Get task boundaries
-        for t in transitions:
-            if t["type"] == "start":
-                task_starts[t["task"]] = t["time"]
-            elif t["type"] == "end":
-                if t["task"] in task_starts:
-                    start_time = task_starts[t["task"]]
-                    end_time = t["time"]
-                    task_color = task_colors[color_idx % len(task_colors)]
-                    ax1.axvspan(start_time, end_time, alpha=0.2, color=task_color,
-                                label=f"Task: {t['task']}")
-                    color_idx += 1
+        # Plot the actual task ranges
+        for task_name, time_range in actual_task_ranges.items():
+            start_time = time_range["start"]
+            end_time = time_range["end"]
+            task_color = task_colors[color_idx % len(task_colors)]
+
+            ax1.axvspan(start_time, end_time, alpha=0.2, color=task_color,
+                        label=f"Task: {task_name}")
+            color_idx += 1
 
         # Add convergence points
         for t in transitions:
@@ -751,41 +958,44 @@ class ConvergenceAnalyzer:
         y_positions = {}
         y_pos = 0
 
-        for i, t in enumerate(transitions):
+        task_spans = {}
+        for t in transitions:
             task = t["task"]
 
             if t["type"] == "start":
-                current_tasks.append(task)
+                if task not in task_spans:
+                    task_spans[task] = {"start": t["time"]}
+
                 if task not in y_positions:
                     y_positions[task] = y_pos
                     y_pos += 1
 
-                # Start of task bar
-                ax2.barh([y_positions[task]], width=0.1, left=t["time"],
-                         color=task_colors[list(y_positions.keys()).index(task) % len(task_colors)],
-                         alpha=0.7)
+            elif t["type"] == "end":
+                if task in task_spans:
+                    task_spans[task]["end"] = t["time"]
+                    task_spans[task]["reason"] = t.get("reason", "unknown")
 
-            elif t["type"] == "end" and task in current_tasks:
-                # Find the start time
-                start_time = next((tr["time"] for tr in transitions if
-                                   tr["type"] == "start" and tr["task"] == task), 0)
+        # Draw Gantt chart based on consolidated spans
+        for task, span in task_spans.items():
+            if "start" in span and "end" in span:
+                start_time = span["start"]
+                end_time = span["end"]
+                reason = span.get("reason", "unknown")
 
-                # Draw full task bar
-                ax2.barh([y_positions[task]], width=t["time"] - start_time, left=start_time,
-                         color=task_colors[list(y_positions.keys()).index(task) % len(task_colors)],
-                         alpha=0.7)
+                # Get the task color
+                task_color = task_colors[list(task_spans.keys()).index(task) % len(task_colors)]
+
+                # Draw task bar
+                ax2.barh([y_positions[task]], width=end_time - start_time, left=start_time,
+                         color=task_color, alpha=0.7)
 
                 # Add task name
-                ax2.text(start_time + (t["time"] - start_time) / 2, y_positions[task],
+                ax2.text(start_time + (end_time - start_time) / 2, y_positions[task],
                          task, ha='center', va='center', color='black', fontweight='bold')
 
-                # Only add star if this quantity contributed to convergence
-                # Find if there's a convergence event for this task and this quantity
-                this_quantity_converged = any(tr["type"] == "converge" and tr["task"] == task
-                                              for tr in transitions)
-
-                if t["reason"] == "converged" and this_quantity_converged:
-                    ax2.plot(t["time"], y_positions[task], 'r*', markersize=10)
+                # Add star if converged
+                if reason == "converged":
+                    ax2.plot(end_time, y_positions[task], 'r*', markersize=10)
 
         # Set x-range if specified
         if x_range is not None:
@@ -814,7 +1024,7 @@ class ConvergenceAnalyzer:
 
         plt.close(fig)
 
-    def print_multi_quantity_summary(self, all_transitions):
+    def print_multi_quantity_summary(self, all_transitions, actual_task_ranges):
         """Print a summary of the simulation progression for all quantities"""
         # Get all unique tasks across all quantities
         all_tasks = set()
@@ -824,22 +1034,16 @@ class ConvergenceAnalyzer:
                     all_tasks.add(t["task"])
 
         # Sort tasks by their start times
-        task_start_times = {}
-        for quantity, transitions in all_transitions.items():
-            for t in transitions:
-                if t["type"] == "start":
-                    if t["task"] not in task_start_times:
-                        task_start_times[t["task"]] = t["time"]
-                    else:
-                        task_start_times[t["task"]] = min(task_start_times[t["task"]], t["time"])
-
-        sorted_tasks = sorted(all_tasks, key=lambda x: task_start_times.get(x, float('inf')))
+        sorted_tasks = sorted(all_tasks, key=lambda x: actual_task_ranges[x]["start"])
 
         # Print summary for each task
         print("\nSimulation progression summary:")
         for task in sorted_tasks:
-            # Get start time (should be the same for all quantities)
-            start_time = task_start_times[task]
+            # Get actual task range
+            start_time = actual_task_ranges[task]["start"]
+            end_time = actual_task_ranges[task]["end"]
+            task_duration = end_time - start_time
+
             print(f"Time {start_time:.2f}s: Started {task}")
 
             # Find convergence information for each quantity
@@ -855,20 +1059,7 @@ class ConvergenceAnalyzer:
                     detection_method = "oscillation detection" if stats.get('used_oscillation_detection', False) else "fixed interval"
                     print(f"  Time {convergence['time']:.2f}s: {quantity} converged using {detection_method} (Std: {std:.2f}%, Slope: {diff:.2f}%)")
 
-            # Find end time
-            end_times = []
-            end_reasons = set()
-            for quantity, transitions in all_transitions.items():
-                end = next((t for t in transitions if
-                            t["type"] == "end" and t["task"] == task), None)
-                if end:
-                    end_times.append(end["time"])
-                    end_reasons.add(end["reason"])
-
-            if end_times:
-                end_time = max(end_times)
-                reason = "/".join(end_reasons)
-                print(f"Time {end_time:.2f}s: {task} ended ({reason})")
+            print(f"Time {end_time:.2f}s: {task} ended (Duration: {task_duration:.2f}s)")
             print("")
 
 
@@ -885,7 +1076,7 @@ if __name__ == "__main__":
             "max_time": 207.36,
             "std_limit": 1.0,
             "slope_limit": 0.25,
-            "interval": 10,
+            "interval": 10.00,
             "use_oscillation_detection": True,  # Enable oscillation detection
             "oscillation_quantities": ["Fx"],  # Apply to Fx only
             "oscillation_cutoff_freq": 0.2  # Cutoff frequency in Hz
@@ -896,7 +1087,7 @@ if __name__ == "__main__":
             "max_time": 259.2,
             "std_limit": 0.5,
             "slope_limit": 0.125,
-            "interval": 86.4,
+            "interval": 10.0,
             "use_oscillation_detection": True,  # Enable oscillation detection
             "oscillation_quantities": ["Fx", "WFT"],  # Apply to both Fx and WFT
             "oscillation_cutoff_freq": 0.15  # Different cutoff frequency
@@ -906,10 +1097,10 @@ if __name__ == "__main__":
             "max_time": 259.2,
             "std_limit": 0.5,
             "slope_limit": 0.125,
-            "interval": 86.4,
+            "interval": 10.0,
             "use_oscillation_detection": True,  # Enable oscillation detection
             "oscillation_quantities": ["Fx", "WFT"],  # Apply to both Fx and WFT
-            "oscillation_cutoff_freq": 0.15  # Different cutoff frequency
+            "oscillation_cutoff_freq": 0.01  # Different cutoff frequency
         },
         {"name": "stopJob"},
     ]
@@ -934,17 +1125,17 @@ if __name__ == "__main__":
         }
 
         # Analyze convergence across all quantities
-        all_transitions = analyzer.analyze_convergence_multi_quantity(
+        all_transitions, actual_task_ranges = analyzer.analyze_convergence_multi_quantity(
             data_dict,
             tasks,
             required_convergence
         )
 
         # Print summary of convergence
-        analyzer.print_multi_quantity_summary(all_transitions)
+        analyzer.print_multi_quantity_summary(all_transitions, actual_task_ranges)
 
         # Plot results for each quantity
-        analyzer.plot_multi_quantity_results(data_dict, all_transitions, "convergence_with_oscillation")
+        analyzer.plot_multi_quantity_results(data_dict, all_transitions, actual_task_ranges, "convergence_with_oscillation")
 
         # Plot detailed oscillation detection visualizations
         analyzer.plot_oscillation_comparison(data_dict, all_transitions, "largeTimeStep")
