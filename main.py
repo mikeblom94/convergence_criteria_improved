@@ -106,18 +106,18 @@ class ConvergenceAnalyzer:
             b, a = signal.butter(4, normalized_cutoff, btype='low')
             filtered_data = signal.filtfilt(b, a, values)
 
-            import matplotlib.pyplot as plt
-
-            # Plot
-            plt.figure(figsize=(10, 5))
-            plt.plot(times, filtered_data, marker='o', linestyle='-')
-            # Labels and title
-            plt.xlabel('Time')
-            plt.ylabel('Oscillation Value')
-            plt.title('Oscillation filtered data Over Time')
-            plt.grid(True)
-            # Show plot
-            plt.show()
+            # import matplotlib.pyplot as plt
+            #
+            # # Plot
+            # plt.figure(figsize=(10, 5))
+            # plt.plot(times, filtered_data, marker='o', linestyle='-')
+            # # Labels and title
+            # plt.xlabel('Time')
+            # plt.ylabel('Oscillation Value')
+            # plt.title('Oscillation filtered data Over Time')
+            # plt.grid(True)
+            # # Show plot
+            # plt.show()
 
         except Exception as e:
             print(f"Warning: Filtering failed: {e}")
@@ -125,7 +125,6 @@ class ConvergenceAnalyzer:
 
         # Find zero crossings to identify oscillations (centered around mean)
         zero_crossings = np.where(np.diff(np.signbit(filtered_data - np.mean(filtered_data))))[0]
-        print(f"Zero crossings: {zero_crossings}")
         # If we don't find enough zero crossings for a full oscillation, try peak detection
         if len(zero_crossings) < 3:  # Need at least 3 crossings for a full oscillation
             return None, None, filtered_data
@@ -164,20 +163,19 @@ class ConvergenceAnalyzer:
         # Detect oscillation
         start_idx, end_idx, filtered_data = self.detect_oscillation(times, values, sampling_freq, cutoff_freq)
 
-        if start_idx:
-            import matplotlib.pyplot as plt
-
-            # Plot
-            plt.figure(figsize=(10, 5))
-            plt.plot(times[start_idx:end_idx], values[start_idx:end_idx], marker='o', linestyle='-')
-            # Labels and title
-            plt.xlabel('Time')
-            plt.ylabel('Oscillation Value')
-            plt.title('Oscillation Values Over Time')
-            plt.grid(True)
-            # Show plot
-            plt.show()
-            print("hi")
+        # if start_idx:
+        #     import matplotlib.pyplot as plt
+        #
+        #     # Plot
+        #     plt.figure(figsize=(10, 5))
+        #     plt.plot(times[start_idx:end_idx], values[start_idx:end_idx], marker='o', linestyle='-')
+        #     # Labels and title
+        #     plt.xlabel('Time')
+        #     plt.ylabel('Oscillation Value')
+        #     plt.title('Oscillation Values Over Time')
+        #     plt.grid(True)
+        #     # Show plot
+        #     plt.show()
 
         # Initialize statistics dictionary
         stats = {}
@@ -202,18 +200,18 @@ class ConvergenceAnalyzer:
         # Standard deviation over the oscillation
         std = np.std(oscillation_values, ddof=1)
 
-        import matplotlib.pyplot as plt
-
-        # Plot
-        plt.figure(figsize=(10, 5))
-        plt.plot(oscillation_times, oscillation_values, marker='o', linestyle='-')
-        # Labels and title
-        plt.xlabel('Time')
-        plt.ylabel('Oscillation Value')
-        plt.title('Oscillation Values Over Time')
-        plt.grid(True)
-        # Show plot
-        plt.show()
+        # import matplotlib.pyplot as plt
+        #
+        # # Plot
+        # plt.figure(figsize=(10, 5))
+        # plt.plot(oscillation_times, oscillation_values, marker='o', linestyle='-')
+        # # Labels and title
+        # plt.xlabel('Time')
+        # plt.ylabel('Oscillation Value')
+        # plt.title('Oscillation Values Over Time')
+        # plt.grid(True)
+        # # Show plot
+        # plt.show()
 
         # Calculate slope over the entire dataset for trend analysis
         # We use the entire dataset to see the overall trend, not just the oscillation
@@ -313,7 +311,8 @@ class ConvergenceAnalyzer:
 
     def check_convergence(self, quantity, times, values, start_time,
                           limit_std_dev, limit_diff_he, base_interval, relative=True,
-                          detect_oscillations=False, cutoff_freq=0.2, attempt_number=0):
+                          detect_oscillations=False, cutoff_freq=0.2, attempt_number=0,
+                          use_slope_criteria=True):  # Added parameter to toggle slope criteria
         """
         Check if a quantity meets convergence criteria with progressive interval expansion
 
@@ -341,6 +340,8 @@ class ConvergenceAnalyzer:
             Cutoff frequency for low-pass filtering
         attempt_number : int
             Current attempt number (determines interval multiplier)
+        use_slope_criteria : bool
+            Whether to include slope criteria in convergence check (default: True)
 
         Returns:
         --------
@@ -398,9 +399,12 @@ class ConvergenceAnalyzer:
             diff_height = abs((diff_height / stats['mean']) * 100)
 
         std_converged = std <= limit_std_dev
-        diff_converged = abs(diff_height) <= limit_diff_he
+        diff_converged = True  # Default to True if not using slope criteria
 
-        # Both criteria must be met for convergence
+        if use_slope_criteria:
+            diff_converged = abs(diff_height) <= limit_diff_he
+
+        # Both criteria must be met for convergence (if slope criteria is enabled)
         converged = std_converged and diff_converged
 
         # Add convergence info to stats
@@ -413,12 +417,27 @@ class ConvergenceAnalyzer:
         stats['limit_diff_he'] = limit_diff_he
         stats['interval_used'] = current_interval
         stats['attempt_number'] = attempt_number
+        stats['use_slope_criteria'] = use_slope_criteria  # Add flag to stats for reference
 
         return converged, stats, oscillation_detected
 
     def analyze_convergence_multi_quantity(self, data_dict, tasks, required_convergence=None):
         """
         Analyze convergence across multiple quantities with properly implemented progressive interval
+
+        Parameters:
+        -----------
+        data_dict : dict
+            Dictionary mapping quantity names to (times, values) tuples
+        tasks : list
+            List of task dictionaries with configuration settings
+        required_convergence : dict, optional
+            Dictionary mapping task names to required quantities for convergence
+
+        Returns:
+        --------
+        tuple : (all_transitions, actual_task_ranges)
+            Transitions for all quantities and actual task time ranges
         """
         if required_convergence is None:
             # Default: each task requires convergence of all quantities analyzed
@@ -443,6 +462,9 @@ class ConvergenceAnalyzer:
         for task_index, task in enumerate(tasks):
             task_name = task.get('name', 'unknown')
             max_time = task.get('max_time', 0.0)
+
+            if task_name == "final":
+                print(f"\n=== Analyzing task: {task_name} ===")
 
             print(f"\n=== Analyzing task: {task_name} ===")
             print(f"  Start time: {current_time}")
@@ -478,6 +500,12 @@ class ConvergenceAnalyzer:
                 task_converged = False
                 convergence_time = None
 
+                # Check if slope criteria should be used for this task
+                use_slope_criteria = task.get('use_slope_criteria', True)  # Default to True for backward compatibility
+
+                if not use_slope_criteria:
+                    print(f"  Note: Slope criteria is disabled for task {task_name}")
+
                 # Check each quantity for convergence
                 for quantity, (times, values) in data_dict.items():
                     # Skip if we're not tracking this quantity for the current task
@@ -492,7 +520,12 @@ class ConvergenceAnalyzer:
                     detection_method = "oscillation detection" if use_oscillation else "fixed interval"
                     print(f"  Checking {quantity} using {detection_method}:")
                     print(f"    - Standard deviation limit: {task['std_limit']}%")
-                    print(f"    - Slope limit: {task['slope_limit']}%")
+
+                    if use_slope_criteria:
+                        print(f"    - Slope limit: {task['slope_limit']}%")
+                    else:
+                        print(f"    - Slope criteria disabled")
+
                     print(f"    - Base interval: {task['interval']} s")
 
                     if use_oscillation:
@@ -535,6 +568,7 @@ class ConvergenceAnalyzer:
 
                         # Log attempt info
                         print(f"    Checking convergence at t={check_time:.2f}s with interval={current_interval:.2f}s (attempt #{attempt + 1})")
+                        attempt += 1
 
                         # Run convergence check
                         converged, stats, oscillation_detected = self.check_convergence(
@@ -548,7 +582,8 @@ class ConvergenceAnalyzer:
                             relative=True,
                             detect_oscillations=use_oscillation,
                             cutoff_freq=cutoff_freq,
-                            attempt_number=attempt
+                            attempt_number=attempt,
+                            use_slope_criteria=use_slope_criteria  # Pass the slope criteria flag
                         )
 
                         # Update last check time
@@ -565,7 +600,11 @@ class ConvergenceAnalyzer:
                                     interval_used = stats.get('interval_used', current_interval)
 
                                     print(f"    {quantity} converged at: {check_time} using {detection_info} (interval: {interval_used:.2f}s)")
-                                    print(f"    Stats: mean={stats['mean']:.2f}, std={stats['std_relative']:.4f}%, slope={stats['diff_height_relative']:.4f}%")
+                                    print(f"    Stats: mean={stats['mean']:.2f}, std={stats['std_relative']:.4f}%", end="")
+                                    if use_slope_criteria:
+                                        print(f", slope={stats['diff_height_relative']:.4f}%")
+                                    else:
+                                        print(" (slope criteria disabled)")
 
                                     # Record convergence
                                     all_transitions[quantity].append({
@@ -593,7 +632,11 @@ class ConvergenceAnalyzer:
                                 detection_info = "fixed interval"
 
                                 print(f"    {quantity} converged at: {check_time} using {detection_info}")
-                                print(f"    Stats: mean={stats['mean']:.2f}, std={stats['std_relative']:.4f}%, slope={stats['diff_height_relative']:.4f}%")
+                                print(f"    Stats: mean={stats['mean']:.2f}, std={stats['std_relative']:.4f}%", end="")
+                                if use_slope_criteria:
+                                    print(f", slope={stats['diff_height_relative']:.4f}%")
+                                else:
+                                    print(" (slope criteria disabled)")
 
                                 # Record convergence
                                 all_transitions[quantity].append({
@@ -699,7 +742,7 @@ class ConvergenceAnalyzer:
                         "reason": "completed"
                     })
 
-        # This return statement is now correctly outside the for loop
+        # Return statement is outside the for loop
         return all_transitions, actual_task_ranges
 
     def plot_multi_quantity_results(self, data_dict, all_transitions, actual_task_ranges, output_prefix="convergence", shared_x_range=True):
@@ -943,7 +986,14 @@ class ConvergenceAnalyzer:
                     ax1.axvspan(stats['begin'], stats['end'], alpha=0.3, color='g')
 
                     # Add stats values
-                    textstr = f"Mean: {mean:.3f}\nStd: {std:.2f}%\nSlope: {diff:.2f}%"
+                    textstr = f"Mean: {mean:.3f}\nStd: {std:.2f}%"
+
+                    # Check if slope criteria was used
+                    if stats.get('use_slope_criteria', True):
+                        textstr += f"\nSlope: {diff:.2f}%"
+                    else:
+                        textstr += "\nSlope criteria disabled"
+
                     if stats.get('used_oscillation_detection', False):
                         textstr += "\n(Using oscillation detection)"
                     props = dict(boxstyle='round', facecolor='wheat', alpha=0.5)
@@ -1057,29 +1107,971 @@ class ConvergenceAnalyzer:
                     std = stats.get('std_relative', 'N/A')
                     diff = stats.get('diff_height_relative', 'N/A')
                     detection_method = "oscillation detection" if stats.get('used_oscillation_detection', False) else "fixed interval"
-                    print(f"  Time {convergence['time']:.2f}s: {quantity} converged using {detection_method} (Std: {std:.2f}%, Slope: {diff:.2f}%)")
+
+                    # Check if slope criteria was used
+                    slope_criteria_used = stats.get('use_slope_criteria', True)
+
+                    print(f"  Time {convergence['time']:.2f}s: {quantity} converged using {detection_method}")
+                    print(f"    - Std: {std:.2f}%")
+
+                    # Only print slope info if it was used in convergence check
+                    if slope_criteria_used:
+                        print(f"    - Slope: {diff:.2f}%")
+                    else:
+                        print(f"    - Slope criteria disabled")
 
             print(f"Time {end_time:.2f}s: {task} ended (Duration: {task_duration:.2f}s)")
             print("")
 
+    def create_optimized_data(self, data_dict, all_transitions, actual_task_ranges, tasks):
+        """
+        Create optimized data sets that remove periods between convergence and next phase start.
 
-# Example usage
+        Parameters:
+        -----------
+        data_dict : dict
+            Dictionary mapping quantity names to (times, values) tuples
+        all_transitions : dict
+            Dictionary mapping quantity names to transitions lists
+        actual_task_ranges : dict
+            Dictionary mapping task names to their actual time ranges
+        tasks : list
+            Original task configurations
+
+        Returns:
+        --------
+        dict: Dictionary mapping quantity names to optimized (times, values) tuples
+        """
+        # Dictionary to store optimized data for each quantity
+        optimized_data = {}
+
+        # Get ordered list of tasks
+        ordered_tasks = []
+        for task in tasks:
+            if task["name"] not in ["stopJob"]:  # Exclude end tasks with no convergence criteria
+                ordered_tasks.append(task["name"])
+
+        # Process each quantity
+        for quantity, (times, values) in data_dict.items():
+            print(f"\nProcessing optimized data for {quantity}...")
+
+            # Initialize lists for optimized data
+            opt_times = []
+            opt_values = []
+
+            # Get transitions for this quantity
+            transitions = all_transitions[quantity]
+
+            # Process each task in order
+            for i, task_name in enumerate(ordered_tasks):
+                print(f"  Analyzing task: {task_name}")
+
+                # Get task start time
+                task_start = actual_task_ranges[task_name]["start"]
+
+                # Find convergence for this task
+                convergence = next((t for t in transitions if
+                                    t["type"] == "converge" and t["task"] == task_name), None)
+
+                if convergence:
+                    convergence_time = convergence["time"]
+                    print(f"    Task converged at {convergence_time:.2f}s")
+
+                    # Find data points from task start to convergence
+                    mask = (times >= task_start) & (times <= convergence_time)
+                    task_times = times[mask]
+                    task_values = values[mask]
+
+                    # Add this section to optimized data
+                    opt_times.extend(task_times)
+                    opt_values.extend(task_values)
+
+                    # If this isn't the last task, add a marker point
+                    if i < len(ordered_tasks) - 1:
+                        next_task = ordered_tasks[i + 1]
+                        next_start = actual_task_ranges[next_task]["start"]
+
+                        # Add a marker point to show the jump
+                        if next_start > convergence_time:
+                            # Create a small gap in the data to clearly show the transition
+                            opt_times.append(convergence_time + 0.001)  # Small increment
+                            opt_values.append(None)  # None creates a break in the plot line
+
+                            # Add the next task's start point
+                            opt_times.append(next_start)
+
+                            # Interpolate the value at next_start
+                            next_start_mask = (times >= next_start)
+                            if np.any(next_start_mask):
+                                next_start_idx = np.argmax(next_start_mask)
+                                next_value = values[next_start_idx]
+                                opt_values.append(next_value)
+                            else:
+                                # Use the last value if we can't find the next
+                                opt_values.append(task_values[-1])
+
+                            print(f"    Jumped from {convergence_time:.2f}s to {next_start:.2f}s (skipped {next_start - convergence_time:.2f}s)")
+                else:
+                    # If no convergence found, include data up to the end of the task
+                    task_end = actual_task_ranges[task_name]["end"]
+                    print(f"    Task did not converge, including all data up to {task_end:.2f}s")
+
+                    # Find data points from task start to task end
+                    mask = (times >= task_start) & (times <= task_end)
+                    task_times = times[mask]
+                    task_values = values[mask]
+
+                    # Add this section to optimized data
+                    opt_times.extend(task_times)
+                    opt_values.extend(task_values)
+
+                    # Add a marker for the next task if applicable
+                    if i < len(ordered_tasks) - 1:
+                        next_task = ordered_tasks[i + 1]
+                        next_start = actual_task_ranges[next_task]["start"]
+
+                        # Create a small gap in the data to clearly show the transition
+                        opt_times.append(task_end + 0.001)  # Small increment
+                        opt_values.append(None)  # None creates a break in the plot line
+
+                        # Add the next task's start point
+                        opt_times.append(next_start)
+
+                        # Interpolate the value at next_start
+                        next_start_mask = (times >= next_start)
+                        if np.any(next_start_mask):
+                            next_start_idx = np.argmax(next_start_mask)
+                            next_value = values[next_start_idx]
+                            opt_values.append(next_value)
+                        else:
+                            # Use the last value if we can't find the next
+                            opt_values.append(task_values[-1])
+
+            # Convert to numpy arrays
+            optimized_data[quantity] = (np.array(opt_times), np.array(opt_values))
+
+            # Calculate time savings
+            original_duration = times[-1] - times[0]
+            optimized_duration = sum([opt_times[i + 1] - opt_times[i] for i in range(len(opt_times) - 1)
+                                      if opt_values[i] is not None and opt_values[i + 1] is not None])
+            time_saved = original_duration - optimized_duration
+            print(f"  Time saved for {quantity}: {time_saved:.2f}s ({(time_saved / original_duration) * 100:.1f}% reduction)")
+
+        return optimized_data
+
+    def plot_optimized_comparison(self, data_dict, optimized_data, all_transitions, actual_task_ranges, output_prefix="optimized"):
+        """
+        Create comparison plots showing original vs optimized data with improved visualization
+
+        Parameters:
+        -----------
+        data_dict : dict
+            Dictionary mapping quantity names to original (times, values) tuples
+        optimized_data : dict
+            Dictionary mapping quantity names to optimized (times, values) tuples
+        all_transitions : dict
+            Dictionary mapping quantity names to transitions lists
+        actual_task_ranges : dict
+            Dictionary mapping task names to their actual time ranges
+        output_prefix : str, optional
+            Prefix for output files
+        """
+        # Create output directory if it doesn't exist
+        os.makedirs("./plots", exist_ok=True)
+
+        # Plot each quantity
+        for quantity in data_dict.keys():
+            original_times, original_values = data_dict[quantity]
+            opt_times, opt_values = optimized_data[quantity]
+            transitions = all_transitions[quantity]
+
+            # Create figure with two subplots
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), height_ratios=[1, 1])
+
+            # Plot original data
+            ax1.plot(original_times, original_values, 'b-', label='Original Data')
+            ax1.set_title(f"{quantity} - Original Data")
+
+            # Find time jumps in optimized data (where None values are)
+            jump_indices = [i for i, v in enumerate(opt_values) if v is None]
+            continuous_segments = []
+            start_idx = 0
+
+            # Create continuous segments for plotting
+            for jump_idx in jump_indices:
+                if jump_idx > start_idx:
+                    # Add segment from start_idx to jump_idx-1
+                    continuous_segments.append((start_idx, jump_idx))
+                # Next segment starts after the None value
+                start_idx = jump_idx + 1
+
+            # Add the final segment if there's data after the last jump
+            if start_idx < len(opt_times):
+                continuous_segments.append((start_idx, len(opt_times)))
+
+            # Plot optimized data by segments with different colors to clearly show jumps
+            segment_colors = ['g', 'darkgreen', 'limegreen', 'forestgreen', 'seagreen']
+            for i, (start_idx, end_idx) in enumerate(continuous_segments):
+                color = segment_colors[i % len(segment_colors)]
+                segment_times = opt_times[start_idx:end_idx]
+                segment_values = opt_values[start_idx:end_idx]
+
+                # Skip if segment is empty
+                if len(segment_times) == 0:
+                    continue
+
+                ax2.plot(segment_times, segment_values, color=color, linestyle='-',
+                         label=f"Segment {i + 1}" if i < 5 else "")
+
+            # Convert opt_values to a numpy array, filtering out None values
+            # This is for calculating min/max safely
+            non_none_values = [v for v in opt_values if v is not None]
+
+            # Make sure we have at least one non-None value
+            if non_none_values:
+                # Calculate min/max for y-axis positioning
+                min_val = min(non_none_values)
+                max_val = max(non_none_values)
+                mid_y = (min_val + max_val) / 2
+
+                # Also plot jump markers (vertical dashed lines to show skips)
+                for jump_idx in jump_indices:
+                    if jump_idx > 0 and jump_idx < len(opt_times) - 1:
+                        jump_time_before = opt_times[jump_idx - 1]
+                        jump_time_after = opt_times[jump_idx + 1]
+
+                        # Add arrow showing the jump
+                        ax2.annotate("",
+                                     xy=(jump_time_after, mid_y),
+                                     xytext=(jump_time_before, mid_y),
+                                     arrowprops=dict(arrowstyle="->", color='red', lw=2),
+                                     annotation_clip=False)
+
+                        # Add text showing time saved
+                        time_saved = jump_time_after - jump_time_before
+                        ax2.text((jump_time_before + jump_time_after) / 2, mid_y,
+                                 f"{time_saved:.2f}s\nskipped",
+                                 color='red', fontweight='bold', ha='center', va='bottom')
+
+            ax2.set_title(f"{quantity} - Optimized Data (With Time Jumps)")
+
+            # Add colored regions for tasks based on actual ranges
+            task_colors = plt.cm.tab10.colors
+            color_idx = 0
+
+            # Add task regions to both plots
+            for task_name, time_range in actual_task_ranges.items():
+                start_time = time_range["start"]
+                end_time = time_range["end"]
+                task_color = task_colors[color_idx % len(task_colors)]
+
+                # Add to original plot
+                ax1.axvspan(start_time, end_time, alpha=0.2, color=task_color,
+                            label=f"Task: {task_name}")
+
+                # Add to optimized plot (if visible in the window)
+                # We need to check if any part of this task's range is in the optimized data
+                if any((opt_times >= start_time) & (opt_times <= end_time)):
+                    ax2.axvspan(start_time, end_time, alpha=0.2, color=task_color)
+
+                color_idx += 1
+
+            # Add convergence points to both plots
+            for t in transitions:
+                if t["type"] == "converge":
+                    # Add to original plot
+                    ax1.axvline(x=t["time"], color='r', linestyle='--')
+
+                    # Add to optimized plot (if visible in the optimized window)
+                    if any(opt_times >= t["time"]):
+                        ax2.axvline(x=t["time"], color='r', linestyle='--')
+
+                    # Add annotation to original plot
+                    ax1.annotate(f"Converged: {t['task']}",
+                                 xy=(t["time"], np.max(original_values)),
+                                 xytext=(t["time"], np.max(original_values) + 0.05 * (np.max(original_values) - np.min(original_values))),
+                                 arrowprops=dict(arrowstyle="->", color='r'))
+
+            # Add legends
+            ax1.legend(loc='upper right')
+            handles, labels = ax2.get_legend_handles_labels()
+            if len(handles) > 0:
+                ax2.legend(handles[:5], labels[:5], loc='upper right')  # Limit to first 5 segments
+
+            # Add grid
+            ax1.grid(True)
+            ax2.grid(True)
+
+            # Set ylim the same for both plots for easier comparison
+            # First ensure we're dealing with non-None values
+            if non_none_values:
+                min_val = min(non_none_values)
+                max_val = max(non_none_values)
+
+                ymin = min(np.min(original_values), min_val)
+                ymax = max(np.max(original_values), max_val)
+                buffer = (ymax - ymin) * 0.1
+                ax1.set_ylim(ymin - buffer, ymax + buffer)
+                ax2.set_ylim(ymin - buffer, ymax + buffer)
+
+            # Calculate time savings
+            original_duration = original_times[-1] - original_times[0]
+            optimized_duration = sum([opt_times[i + 1] - opt_times[i] for i in range(len(opt_times) - 1)
+                                      if i + 1 < len(opt_values) and opt_values[i] is not None and opt_values[i + 1] is not None])
+            time_saved = original_duration - optimized_duration
+
+            # Add time savings info
+            fig.suptitle(f"{quantity} - Convergence Optimization Comparison\nTime saved: {time_saved:.2f}s ({(time_saved / original_duration) * 100:.1f}% reduction)",
+                         fontsize=14)
+
+            # Set labels
+            ax1.set_ylabel(quantity)
+            ax2.set_ylabel(quantity)
+            ax2.set_xlabel('Time [s]')
+
+            plt.tight_layout()
+
+            # Save figure
+            plt.savefig(f"./plots/{output_prefix}_{quantity.lower()}.png", dpi=300, bbox_inches='tight')
+            print(f"Comparison plot saved to {output_prefix}_{quantity.lower()}.png")
+
+            plt.close(fig)
+
+    def create_compressed_timeline_data(self, data_dict, optimized_data, output_prefix="compressed"):
+        """
+        Create a version of the optimized data with a compressed timeline.
+        This removes the time gaps completely and creates a continuous timeline.
+
+        Parameters:
+        -----------
+        data_dict : dict
+            Dictionary mapping quantity names to original (times, values) tuples
+        optimized_data : dict
+            Dictionary mapping quantity names to optimized (times, values) tuples
+        output_prefix : str, optional
+            Prefix for output files
+
+        Returns:
+        --------
+        dict: Dictionary mapping quantity names to compressed (times, values) tuples
+        """
+        compressed_data = {}
+
+        for quantity, (opt_times, opt_values) in optimized_data.items():
+            print(f"\nCreating compressed timeline for {quantity}...")
+
+            # Initialize compressed times and values
+            compressed_times = []
+            compressed_values = []
+
+            # Find time jumps (None values)
+            jump_indices = [i for i, v in enumerate(opt_values) if v is None]
+
+            # Process data in segments
+            current_time = 0.0  # Start at time 0
+            last_valid_time = 0.0
+
+            for i in range(len(opt_times)):
+                if i in jump_indices:
+                    # Skip None values
+                    continue
+
+                if opt_values[i] is not None:
+                    if i > 0 and i - 1 in jump_indices:
+                        # This is the first point after a jump
+                        # Calculate how much time to skip
+                        time_diff = opt_times[i] - last_valid_time
+                        current_time += 0.01  # Just add a small increment to show the jump
+                    else:
+                        # Regular point - add the time difference from the last point
+                        if len(compressed_times) > 0:
+                            time_diff = opt_times[i] - opt_times[i - 1]
+                            current_time += time_diff
+                        else:
+                            # First point - keep the original time
+                            current_time = opt_times[i]
+
+                    # Add point to compressed data
+                    compressed_times.append(current_time)
+                    compressed_values.append(opt_values[i])
+
+                    # Update last valid time
+                    last_valid_time = opt_times[i]
+
+            # Convert to numpy arrays
+            compressed_data[quantity] = (np.array(compressed_times), np.array(compressed_values))
+
+            # Calculate compression ratio
+            original_times, _ = data_dict[quantity]
+            original_duration = original_times[-1] - original_times[0]
+
+            # Make sure we have compressed data to work with
+            if len(compressed_times) > 0:
+                compressed_duration = compressed_times[-1] - compressed_times[0]
+
+                print(f"  Original duration: {original_duration:.2f}s")
+                print(f"  Compressed duration: {compressed_duration:.2f}s")
+                print(f"  Compression ratio: {compressed_duration / original_duration:.2f}")
+            else:
+                print("  No compressed data generated")
+
+        return compressed_data
+
+    def plot_compressed_data(self, data_dict, optimized_data, compressed_data, all_transitions, actual_task_ranges, output_prefix="compressed"):
+        """
+        Create plots showing original, optimized with gaps, and fully compressed data
+
+        Parameters:
+        -----------
+        data_dict : dict
+            Dictionary mapping quantity names to original (times, values) tuples
+        optimized_data : dict
+            Dictionary mapping quantity names to optimized (times, values) tuples
+        compressed_data : dict
+            Dictionary mapping quantity names to compressed (times, values) tuples
+        all_transitions : dict
+            Dictionary mapping quantity names to transitions lists
+        actual_task_ranges : dict
+            Dictionary mapping task names to their actual time ranges
+        output_prefix : str, optional
+            Prefix for output files
+        """
+        # Create output directory if it doesn't exist
+        os.makedirs("./plots", exist_ok=True)
+
+        # Plot each quantity
+        for quantity in data_dict.keys():
+            original_times, original_values = data_dict[quantity]
+            opt_times, opt_values = optimized_data[quantity]
+            compressed_times, compressed_values = compressed_data[quantity]
+
+            # Skip if compressed data is empty
+            if len(compressed_times) == 0:
+                print(f"Skipping {quantity} - no compressed data")
+                continue
+
+            # Create figure with three subplots
+            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 15), height_ratios=[1, 1, 1])
+
+            # Plot original data
+            ax1.plot(original_times, original_values, 'b-', label='Original Data')
+            ax1.set_title(f"{quantity} - Original Data (Full Timeline)")
+
+            # Plot optimized data with gaps
+            # Convert None values to NaN for plotting
+            opt_values_plot = np.array([float('nan') if v is None else v for v in opt_values])
+            ax2.plot(opt_times, opt_values_plot, 'g-', label='Optimized Data (With Gaps)')
+            ax2.set_title(f"{quantity} - Optimized Data (With Time Gaps)")
+
+            # Plot compressed data
+            ax3.plot(compressed_times, compressed_values, 'r-', label='Compressed Data (Continuous)')
+            ax3.set_title(f"{quantity} - Compressed Timeline (No Gaps)")
+
+            # Add legends
+            ax1.legend(loc='upper right')
+            ax2.legend(loc='upper right')
+            ax3.legend(loc='upper right')
+
+            # Add grid
+            ax1.grid(True)
+            ax2.grid(True)
+            ax3.grid(True)
+
+            # Extract non-None values for min/max calculation
+            non_none_values = [v for v in opt_values if v is not None]
+
+            # Set ylim the same for all plots
+            if non_none_values:
+                ymin = min(np.min(original_values), min(non_none_values), np.min(compressed_values))
+                ymax = max(np.max(original_values), max(non_none_values), np.max(compressed_values))
+                buffer = (ymax - ymin) * 0.1
+                ax1.set_ylim(ymin - buffer, ymax + buffer)
+                ax2.set_ylim(ymin - buffer, ymax + buffer)
+                ax3.set_ylim(ymin - buffer, ymax + buffer)
+
+            # Calculate time savings
+            original_duration = original_times[-1] - original_times[0]
+            compressed_duration = compressed_times[-1] - compressed_times[0]
+            time_saved = original_duration - compressed_duration
+
+            # Add time savings info
+            fig.suptitle(
+                f"{quantity} - Convergence Optimization Comparison\nTime saved: {time_saved:.2f}s ({(time_saved / original_duration) * 100:.1f}% reduction)\nCompressed duration: {compressed_duration:.2f}s",
+                fontsize=14)
+
+            # Set labels
+            ax1.set_ylabel(quantity)
+            ax2.set_ylabel(quantity)
+            ax3.set_ylabel(quantity)
+            ax3.set_xlabel('Time [s]')
+
+            plt.tight_layout()
+
+            # Save figure
+            plt.savefig(f"./plots/{output_prefix}_{quantity.lower()}.png", dpi=300, bbox_inches='tight')
+            print(f"Compressed timeline plot saved to {output_prefix}_{quantity.lower()}.png")
+
+            plt.close(fig)
+
+    def save_optimized_data(self, optimized_data, folder="./optimized_data"):
+        """
+        Save optimized data to CSV files
+
+        Parameters:
+        -----------
+        optimized_data : dict
+            Dictionary mapping quantity names to optimized (times, values) tuples
+        folder : str
+            Folder to save the CSV files
+        """
+        # Create output directory if it doesn't exist
+        os.makedirs(folder, exist_ok=True)
+
+        for quantity, (times, values) in optimized_data.items():
+            # Create pandas DataFrame
+            df = pd.DataFrame({
+                'time': times,
+                'value': values
+            })
+
+            # Remove rows with None values
+            df = df.dropna()
+
+            # Save to CSV
+            filename = f"{folder}/{quantity.lower()}_optimized.csv"
+            df.to_csv(filename, index=False)
+            print(f"Optimized data saved to {filename}")
+
+    def print_phase_values(self, data_dict, all_transitions, actual_task_ranges, tasks):
+        """
+        Print the initial and final values for each quantity in each phase.
+
+        Parameters:
+        -----------
+        data_dict : dict
+            Dictionary mapping quantity names to (times, values) tuples
+        all_transitions : dict
+            Dictionary mapping quantity names to transitions lists
+        actual_task_ranges : dict
+            Dictionary mapping task names to their actual time ranges
+        tasks : list
+            Original task configurations
+        """
+        print("\n" + "=" * 80)
+        print("PHASE VALUE SUMMARY (ORIGINAL DATA)")
+        print("=" * 80)
+
+        # Get ordered list of tasks
+        ordered_tasks = []
+        for task in tasks:
+            ordered_tasks.append(task["name"])
+
+        # Process each task
+        for task_name in ordered_tasks:
+            # Skip tasks without actual time ranges
+            if task_name not in actual_task_ranges:
+                continue
+
+            task_start = actual_task_ranges[task_name]["start"]
+            task_end = actual_task_ranges[task_name]["end"]
+
+            print(f"\n➤ Task: {task_name} (from t={task_start:.2f}s to t={task_end:.2f}s)")
+
+            # Process each quantity
+            for quantity, (times, values) in data_dict.items():
+                # Find values at start and end of task
+                start_mask = (times >= task_start) & (times <= task_start + 0.1)  # Small window at start
+                end_mask = (times >= task_end - 0.1) & (times <= task_end)  # Small window at end
+
+                # Find the convergence time for this quantity in this task
+                convergence = next((t for t in all_transitions[quantity] if
+                                    t["type"] == "converge" and t["task"] == task_name), None)
+
+                if np.any(start_mask) and np.any(end_mask):
+                    start_idx = np.where(start_mask)[0][0]  # First point in the start window
+                    end_idx = np.where(end_mask)[0][-1]  # Last point in the end window
+
+                    start_value = values[start_idx]
+                    end_value = values[end_idx]
+
+                    # Calculate percent change
+                    if abs(start_value) > 1e-10:  # Avoid division by very small numbers
+                        percent_change = ((end_value - start_value) / abs(start_value)) * 100
+                    else:
+                        percent_change = 0
+
+                    # Format the output with color coding for better readability
+                    if abs(percent_change) < 0.1:
+                        status = "stable"
+                    elif abs(percent_change) < 1.0:
+                        status = "minor change"
+                    else:
+                        status = "significant change"
+
+                    # Print with convergence information if available
+                    if convergence:
+                        conv_time = convergence["time"]
+                        conv_mask = (times >= conv_time - 0.1) & (times <= conv_time + 0.1)
+
+                        if np.any(conv_mask):
+                            conv_idx = np.where(conv_mask)[0][0]
+                            conv_value = values[conv_idx]
+
+                            print(f"  • {quantity}: {start_value:.4g} → {end_value:.4g} ({percent_change:.2f}% change, {status})")
+                            print(f"    ◦ Converged at t={conv_time:.2f}s with value {conv_value:.4g}")
+                    else:
+                        print(f"  • {quantity}: {start_value:.4g} → {end_value:.4g} ({percent_change:.2f}% change, {status})")
+                else:
+                    print(f"  • {quantity}: No data available for this phase")
+
+    def print_optimized_phase_values(self, data_dict, optimized_data, all_transitions, actual_task_ranges, tasks):
+        """
+        Print the initial and final values for each quantity in each phase using optimized data.
+
+        Parameters:
+        -----------
+        data_dict : dict
+            Dictionary mapping quantity names to original (times, values) tuples
+        optimized_data : dict
+            Dictionary mapping quantity names to optimized (times, values) tuples
+        all_transitions : dict
+            Dictionary mapping quantity names to transitions lists
+        actual_task_ranges : dict
+            Dictionary mapping task names to their actual time ranges
+        tasks : list
+            Original task configurations
+        """
+        print("\n" + "=" * 80)
+        print("PHASE VALUE SUMMARY (OPTIMIZED DATA)")
+        print("=" * 80)
+
+        # Get ordered list of tasks
+        ordered_tasks = []
+        for task in tasks:
+            ordered_tasks.append(task["name"])
+
+        # Process each task
+        for task_name in ordered_tasks:
+            # Skip tasks without actual time ranges
+            if task_name not in actual_task_ranges:
+                continue
+
+            task_start = actual_task_ranges[task_name]["start"]
+            task_end = actual_task_ranges[task_name]["end"]
+
+            print(f"\n➤ Task: {task_name} (from t={task_start:.2f}s to t={task_end:.2f}s)")
+
+            # Process each quantity
+            for quantity, (times, values) in data_dict.items():
+                # Get optimized data
+                opt_times, opt_values = optimized_data[quantity]
+
+                # Find values at start and end of task in optimized data
+                start_mask = (opt_times >= task_start) & (opt_times <= task_start + 0.1)  # Small window at start
+                end_mask = (opt_times >= task_end - 0.1) & (opt_times <= task_end)  # Small window at end
+
+                # Find the convergence time for this quantity in this task
+                convergence = next((t for t in all_transitions[quantity] if
+                                    t["type"] == "converge" and t["task"] == task_name), None)
+
+                # Check if this task is included in the optimized data
+                if np.any(start_mask) and np.any(end_mask):
+                    # Get the indices in the optimized data
+                    start_idx = np.where(start_mask)[0][0]  # First point in the start window
+                    end_idx = np.where(end_mask)[0][-1]  # Last point in the end window
+
+                    # Make sure the values aren't None
+                    if opt_values[start_idx] is not None and opt_values[end_idx] is not None:
+                        start_value = opt_values[start_idx]
+                        end_value = opt_values[end_idx]
+
+                        # Calculate percent change
+                        if abs(start_value) > 1e-10:  # Avoid division by very small numbers
+                            percent_change = ((end_value - start_value) / abs(start_value)) * 100
+                        else:
+                            percent_change = 0
+
+                        # Format the output with color coding for better readability
+                        if abs(percent_change) < 0.1:
+                            status = "stable"
+                        elif abs(percent_change) < 1.0:
+                            status = "minor change"
+                        else:
+                            status = "significant change"
+
+                        # Print with convergence information if available
+                        if convergence:
+                            conv_time = convergence["time"]
+                            # Check if the convergence time is in the optimized data
+                            conv_mask = (opt_times >= conv_time - 0.1) & (opt_times <= conv_time + 0.1)
+
+                            if np.any(conv_mask):
+                                conv_idx = np.where(conv_mask)[0][0]
+
+                                # Make sure the value isn't None
+                                if opt_values[conv_idx] is not None:
+                                    conv_value = opt_values[conv_idx]
+                                    print(f"  • {quantity}: {start_value:.4g} → {end_value:.4g} ({percent_change:.2f}% change, {status})")
+                                    print(f"    ◦ Converged at t={conv_time:.2f}s with value {conv_value:.4g}")
+                                else:
+                                    print(f"  • {quantity}: {start_value:.4g} → {end_value:.4g} ({percent_change:.2f}% change, {status})")
+                            else:
+                                print(f"  • {quantity}: {start_value:.4g} → {end_value:.4g} ({percent_change:.2f}% change, {status})")
+                        else:
+                            print(f"  • {quantity}: {start_value:.4g} → {end_value:.4g} ({percent_change:.2f}% change, {status})")
+                    else:
+                        print(f"  • {quantity}: Data contains None values at phase boundaries")
+                else:
+                    # Check if this phase is completely skipped in the optimized data
+                    if convergence:
+                        print(f"  • {quantity}: Phase skipped after convergence at t={convergence['time']:.2f}s")
+                    else:
+                        print(f"  • {quantity}: No optimized data available for this phase")
+
+    def generate_summary_table(self, data_dict, optimized_data, all_transitions, actual_task_ranges, tasks, auto_save=True, filename="phase_value_summary.csv"):
+        """
+        Generate a summary table of all phases, quantities, and their values.
+
+        Parameters:
+        -----------
+        data_dict : dict
+            Dictionary mapping quantity names to original (times, values) tuples
+        optimized_data : dict
+            Dictionary mapping quantity names to optimized (times, values) tuples
+        all_transitions : dict
+            Dictionary mapping quantity names to transitions lists
+        actual_task_ranges : dict
+            Dictionary mapping task names to their actual time ranges
+        tasks : list
+            Original task configurations
+        auto_save : bool, optional
+            Whether to automatically save the table to CSV without prompting
+        filename : str, optional
+            Name of the CSV file to create if auto_save is True
+        """
+        # Get ordered list of tasks
+        ordered_tasks = []
+
+        # Create a map of task names to their original max times
+        task_max_times = {}
+        for task in tasks:
+            if task["name"] not in ["stopJob"]:  # Exclude end tasks with no convergence criteria
+                ordered_tasks.append(task["name"])
+                # Store the original max time for each task
+                if "max_time" in task:
+                    task_max_times[task["name"]] = task["max_time"]
+
+        # Create summary table data structure
+        summary_table = {}
+
+        # Process each quantity
+        for quantity, (times, values) in data_dict.items():
+            summary_table[quantity] = {}
+
+            # Get optimized data
+            opt_times, opt_values = optimized_data[quantity]
+
+            # Find the previous task end time to calculate cumulative start times
+            prev_end_time = 0.0
+
+            # Process each task
+            for task_index, task_name in enumerate(ordered_tasks):
+                # Skip tasks without actual time ranges
+                if task_name not in actual_task_ranges:
+                    continue
+
+                task_start = actual_task_ranges[task_name]["start"]
+                task_end = actual_task_ranges[task_name]["end"]
+
+                # Calculate the original max end time (non-converged end time)
+                # Use either the stored max time from the task definition or the next task's start
+                original_max_end_time = task_start + task_max_times.get(task_name, 0)
+
+                # Find values at start and end of task in original data
+                start_mask = (times >= task_start) & (times <= task_start + 0.1)
+                end_mask = (times >= task_end - 0.1) & (times <= task_end)
+
+                # Find the convergence time for this quantity in this task
+                convergence = next((t for t in all_transitions[quantity] if
+                                    t["type"] == "converge" and t["task"] == task_name), None)
+
+                # Initialize task data
+                task_data = {
+                    "start_time": task_start,
+                    "end_time": task_end,
+                    "original_start_value": None,
+                    "original_end_value": None,
+                    "optimized_start_value": None,
+                    "optimized_end_value": None,
+                    "converged": convergence is not None,
+                    "convergence_time": None,
+                    "convergence_value": None,
+                    "time_saved": 0
+                }
+
+                # Get original values
+                if np.any(start_mask) and np.any(end_mask):
+                    start_idx = np.where(start_mask)[0][0]
+                    end_idx = np.where(end_mask)[0][-1]
+
+                    task_data["original_start_value"] = values[start_idx]
+                    task_data["original_end_value"] = values[end_idx]
+
+                # Get optimized values
+                opt_start_mask = (opt_times >= task_start) & (opt_times <= task_start + 0.1)
+                opt_end_mask = (opt_times >= task_end - 0.1) & (opt_times <= task_end)
+
+                if np.any(opt_start_mask) and np.any(opt_end_mask):
+                    opt_start_idx = np.where(opt_start_mask)[0][0]
+                    opt_end_idx = np.where(opt_end_mask)[0][-1]
+
+                    if opt_values[opt_start_idx] is not None and opt_values[opt_end_idx] is not None:
+                        task_data["optimized_start_value"] = opt_values[opt_start_idx]
+                        task_data["optimized_end_value"] = opt_values[opt_end_idx]
+
+                # Get convergence data and calculate true time saved
+                if convergence:
+                    task_data["convergence_time"] = convergence["time"]
+
+                    # Find value at convergence time
+                    conv_mask = (times >= convergence["time"] - 0.1) & (times <= convergence["time"] + 0.1)
+                    if np.any(conv_mask):
+                        conv_idx = np.where(conv_mask)[0][0]
+                        task_data["convergence_value"] = values[conv_idx]
+
+                    # Calculate time saved - use the original max end time for correct calculation
+                    if task_data["convergence_time"] < original_max_end_time:
+                        task_data["time_saved"] = original_max_end_time - task_data["convergence_time"]
+
+                        # For WFT in propulsionVariation - calculate the special case
+                        if quantity == "WFT" and task_name == "propulsionVariation":
+                            # The time saved should be the time between convergence and the end of the phase
+                            # If WFT converges before Fx, but we had to wait for Fx anyway
+                            fx_convergence = next((t for t in all_transitions["Fx"] if
+                                                   t["type"] == "converge" and t["task"] == task_name), None)
+                            if fx_convergence and fx_convergence["time"] > task_data["convergence_time"]:
+                                # Only count time saved if we're not waiting for another required quantity
+                                task_data["time_saved"] = 0  # Reset if we had to wait for Fx anyway
+
+                # Add task data to summary
+                summary_table[quantity][task_name] = task_data
+
+        # Fix the time saved for quantities in phases where multiple quantities need to converge
+        # For example, in propulsionVariation, both Fx and WFT need to converge
+        for task_name in ordered_tasks:
+            if task_name in ["propulsionVariation", "final"]:  # Phases that require multiple convergences
+                # Find the latest convergence time among required quantities
+                latest_convergence_time = 0
+                for quantity in required_convergence.get(task_name, []):
+                    if quantity in summary_table and task_name in summary_table[quantity]:
+                        if summary_table[quantity][task_name]["converged"]:
+                            conv_time = summary_table[quantity][task_name]["convergence_time"]
+                            if conv_time > latest_convergence_time:
+                                latest_convergence_time = conv_time
+
+                # Adjust time saved for early-converging quantities
+                for quantity in required_convergence.get(task_name, []):
+                    if quantity in summary_table and task_name in summary_table[quantity]:
+                        if summary_table[quantity][task_name]["converged"]:
+                            conv_time = summary_table[quantity][task_name]["convergence_time"]
+                            if conv_time < latest_convergence_time:
+                                # This quantity converged early but had to wait for others
+                                summary_table[quantity][task_name]["time_saved"] = 0
+
+        # Print summary table
+        print("\n" + "=" * 100)
+        print("COMPREHENSIVE VALUE SUMMARY (ALL PHASES AND QUANTITIES)")
+        print("=" * 100)
+
+        # Print table headers
+        headers = ["Quantity", "Phase", "Start Time", "End Time", "Original Start", "Original End", "Optimized Start", "Optimized End",
+                   "Converged", "Conv Time", "Conv Value", "Time Saved"]
+        print(f"{headers[0]:<10} {headers[1]:<20} {headers[2]:<10} {headers[3]:<10} {headers[4]:<15} {headers[5]:<15} "
+              f"{headers[6]:<15} {headers[7]:<15} {headers[8]:<10} {headers[9]:<10} {headers[10]:<15} {headers[11]:<10}")
+        print("-" * 150)
+
+        # Print table rows
+        for quantity, tasks_data in summary_table.items():
+            for task_name, task_data in tasks_data.items():
+                # Format values for printing
+                orig_start = f"{task_data['original_start_value']:.4g}" if task_data['original_start_value'] is not None else "N/A"
+                orig_end = f"{task_data['original_end_value']:.4g}" if task_data['original_end_value'] is not None else "N/A"
+                opt_start = f"{task_data['optimized_start_value']:.4g}" if task_data['optimized_start_value'] is not None else "N/A"
+                opt_end = f"{task_data['optimized_end_value']:.4g}" if task_data['optimized_end_value'] is not None else "N/A"
+                conv = "Yes" if task_data['converged'] else "No"
+                conv_time = f"{task_data['convergence_time']:.2f}s" if task_data['convergence_time'] is not None else "N/A"
+                conv_val = f"{task_data['convergence_value']:.4g}" if task_data['convergence_value'] is not None else "N/A"
+                time_saved = f"{task_data['time_saved']:.2f}s" if task_data['time_saved'] > 0 else "0.00s"
+
+                print(f"{quantity:<10} {task_name:<20} {task_data['start_time']:<10.2f} {task_data['end_time']:<10.2f} "
+                      f"{orig_start:<15} {orig_end:<15} {opt_start:<15} {opt_end:<15} "
+                      f"{conv:<10} {conv_time:<10} {conv_val:<15} {time_saved:<10}")
+
+        # Auto-save to CSV if enabled
+        if auto_save:
+            self.export_summary_to_csv(summary_table, filename)
+
+        return summary_table  # Return the summary table for potential further use
+
+    def export_summary_to_csv(self, summary_table, filename="phase_value_summary.csv"):
+        """
+        Export the summary table to a CSV file.
+
+        Parameters:
+        -----------
+        summary_table : dict
+            Dictionary containing all the summary data
+        filename : str
+            Name of the CSV file to create
+        """
+        # Create the CSV data
+        csv_data = [["Quantity", "Phase", "Start Time", "End Time", "Original Start", "Original End",
+                     "Optimized Start", "Optimized End", "Converged", "Convergence Time",
+                     "Convergence Value", "Time Saved"]]
+
+        for quantity, tasks_data in summary_table.items():
+            for task_name, task_data in tasks_data.items():
+                # Format values
+                orig_start = task_data['original_start_value'] if task_data['original_start_value'] is not None else "N/A"
+                orig_end = task_data['original_end_value'] if task_data['original_end_value'] is not None else "N/A"
+                opt_start = task_data['optimized_start_value'] if task_data['optimized_start_value'] is not None else "N/A"
+                opt_end = task_data['optimized_end_value'] if task_data['optimized_end_value'] is not None else "N/A"
+                conv = "Yes" if task_data['converged'] else "No"
+                conv_time = task_data['convergence_time'] if task_data['convergence_time'] is not None else "N/A"
+                conv_val = task_data['convergence_value'] if task_data['convergence_value'] is not None else "N/A"
+
+                csv_data.append([
+                    quantity, task_name, task_data['start_time'], task_data['end_time'],
+                    orig_start, orig_end, opt_start, opt_end,
+                    conv, conv_time, conv_val, task_data['time_saved']
+                ])
+
+        # Write to CSV
+        import csv
+        with open(filename, 'w', newline='') as csvfile:
+            csv_writer = csv.writer(csvfile)
+            csv_writer.writerows(csv_data)
+
+        print(f"Summary exported to {filename}")
+
+
 if __name__ == "__main__":
     # Initialize analyzer
     analyzer = ConvergenceAnalyzer()
 
-    # Example configuration with oscillation detection
+    # Example configuration with oscillation detection and optional slope criteria
     tasks = [
         {"name": "velocityRamp", "max_time": 74.08},
         {
             "name": "largeTimeStep",
             "max_time": 207.36,
             "std_limit": 1.0,
-            "slope_limit": 0.25,
+            "slope_limit": 0.25,  # Still needed even if use_slope_criteria is False
             "interval": 10.00,
-            "use_oscillation_detection": True,  # Enable oscillation detection
-            "oscillation_quantities": ["Fx"],  # Apply to Fx only
-            "oscillation_cutoff_freq": 0.2  # Cutoff frequency in Hz
+            "use_oscillation_detection": True,
+            "oscillation_quantities": ["Fx"],
+            "oscillation_cutoff_freq": 0.2,
+            "use_slope_criteria": False  # Disabling slope criteria for this task
         },
         {"name": "reduceTimeStep"},
         {
@@ -1088,9 +2080,10 @@ if __name__ == "__main__":
             "std_limit": 0.5,
             "slope_limit": 0.125,
             "interval": 10.0,
-            "use_oscillation_detection": True,  # Enable oscillation detection
-            "oscillation_quantities": ["Fx", "WFT"],  # Apply to both Fx and WFT
-            "oscillation_cutoff_freq": 0.15  # Different cutoff frequency
+            "use_oscillation_detection": True,
+            "oscillation_quantities": ["Fx", "WFT"],
+            "oscillation_cutoff_freq": 0.15,
+            "use_slope_criteria": False  # Disabling slope criteria for this task
         },
         {
             "name": "final",
@@ -1098,9 +2091,10 @@ if __name__ == "__main__":
             "std_limit": 0.5,
             "slope_limit": 0.125,
             "interval": 10.0,
-            "use_oscillation_detection": True,  # Enable oscillation detection
-            "oscillation_quantities": ["Fx", "WFT"],  # Apply to both Fx and WFT
-            "oscillation_cutoff_freq": 0.01  # Different cutoff frequency
+            "use_oscillation_detection": True,
+            "oscillation_quantities": ["Fx", "WFT"],
+            "oscillation_cutoff_freq": 0.15,
+            "use_slope_criteria": False  # Disabling slope criteria for this task
         },
         {"name": "stopJob"},
     ]
@@ -1134,6 +2128,9 @@ if __name__ == "__main__":
         # Print summary of convergence
         analyzer.print_multi_quantity_summary(all_transitions, actual_task_ranges)
 
+        # Print phase values for original data
+        analyzer.print_phase_values(data_dict, all_transitions, actual_task_ranges, tasks)
+
         # Plot results for each quantity
         analyzer.plot_multi_quantity_results(data_dict, all_transitions, actual_task_ranges, "convergence_with_oscillation")
 
@@ -1141,6 +2138,27 @@ if __name__ == "__main__":
         analyzer.plot_oscillation_comparison(data_dict, all_transitions, "largeTimeStep")
         analyzer.plot_oscillation_comparison(data_dict, all_transitions, "propulsionVariation")
         analyzer.plot_oscillation_comparison(data_dict, all_transitions, "final")
+
+        # Create optimized data sets that jump from convergence to next phase
+        optimized_data = analyzer.create_optimized_data(data_dict, all_transitions, actual_task_ranges, tasks)
+
+        # Print phase values for optimized data
+        analyzer.print_optimized_phase_values(data_dict, optimized_data, all_transitions, actual_task_ranges, tasks)
+
+        # Generate comprehensive summary table and auto-save to CSV
+        analyzer.generate_summary_table(data_dict, optimized_data, all_transitions, actual_task_ranges, tasks, auto_save=True)
+
+        # Plot comparison with improved visualization
+        analyzer.plot_optimized_comparison(data_dict, optimized_data, all_transitions, actual_task_ranges)
+
+        # Create compressed timeline data
+        compressed_data = analyzer.create_compressed_timeline_data(data_dict, optimized_data)
+
+        # Plot compressed data comparison - FIX: all_transitions instead of all_translations
+        analyzer.plot_compressed_data(data_dict, optimized_data, compressed_data, all_transitions, actual_task_ranges)
+
+        # Save optimized data to CSV files
+        analyzer.save_optimized_data(optimized_data)
 
     except FileNotFoundError as e:
         print(f"Error: {e}")
