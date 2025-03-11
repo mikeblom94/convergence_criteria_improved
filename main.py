@@ -421,6 +421,63 @@ class ConvergenceAnalyzer:
 
         return converged, stats, oscillation_detected
 
+    # Add the new function to load and process the CSV file
+    def load_original_phase_summary(self, csv_file="original_phase_summary.csv"):
+        """
+        Load and process the original phase summary CSV file.
+
+        Parameters:
+        -----------
+        csv_file : str
+            Path to the CSV file
+
+        Returns:
+        --------
+        dict : Dictionary organized by quantity and phase, containing phase information
+        """
+        if not os.path.exists(csv_file):
+            raise FileNotFoundError(f"Original phase summary file not found: {csv_file}")
+
+        # Load the CSV file using pandas
+        df = pd.read_csv(csv_file)
+
+        # Initialize a nested dictionary to store the data
+        phase_summary = {}
+
+        # Process each row in the CSV
+        for _, row in df.iterrows():
+            quantity = row['Quantity']
+            phase = row['Phase']
+
+            # Initialize the quantity dictionary if it doesn't exist
+            if quantity not in phase_summary:
+                phase_summary[quantity] = {}
+
+            # Check if values are strings and handle special cases
+            converged = row['Converged'] == 'Yes' if isinstance(row['Converged'], str) else row['Converged']
+            conv_time = row['Convergence Time']
+            conv_value = row['Convergence Value']
+
+            # Handle N/A or NA string values
+            if isinstance(conv_time, str) and conv_time.upper() in ['N/A', 'NA']:
+                conv_time = None
+            if isinstance(conv_value, str) and conv_value.upper() in ['N/A', 'NA']:
+                conv_value = None
+
+            # Store the phase data
+            phase_summary[quantity][phase] = {
+                'start_time': row['Start Time'],
+                'end_time': row['End Time'],
+                'start_value': row['Start Value'],
+                'end_value': row['End Value'],
+                'converged': converged,
+                'convergence_time': conv_time if converged else None,
+                'convergence_value': conv_value if converged else None,
+                'time_saved': row['Time Saved']
+            }
+
+        return phase_summary
+
     def analyze_convergence_multi_quantity(self, data_dict, tasks, required_convergence=None):
         """
         Analyze convergence across multiple quantities with properly implemented progressive interval
@@ -439,6 +496,10 @@ class ConvergenceAnalyzer:
         tuple : (all_transitions, actual_task_ranges)
             Transitions for all quantities and actual task time ranges
         """
+
+        # Load original phase summary from CSV
+        original_phase_summary = analyzer.load_original_phase_summary("original_phase_summary.csv")
+
         if required_convergence is None:
             # Default: each task requires convergence of all quantities analyzed
             required_convergence = {}
@@ -468,6 +529,11 @@ class ConvergenceAnalyzer:
 
             print(f"\n=== Analyzing task: {task_name} ===")
             print(f"  Start time: {current_time}")
+
+            if task_name == "propulsionVariation":
+                current_time = max(original_phase_summary['Fx']["largeTimeStep"]["end_time"], original_phase_summary['WFT']["largeTimeStep"]["end_time"])
+            if task_name == "final":
+                current_time = max(original_phase_summary['Fx']["propulsionVariation"]["end_time"], original_phase_summary['WFT']["propulsionVariation"]["end_time"])
 
             # Record task start for each quantity
             for quantity in data_dict.keys():
@@ -614,7 +680,6 @@ class ConvergenceAnalyzer:
                                         "stats": stats,
                                         "detection_method": detection_info
                                     })
-
                                     # Mark as converged
                                     converged_quantities[task_name].add(quantity)
                                     task_convergence[task_name][quantity] = check_time
@@ -741,7 +806,6 @@ class ConvergenceAnalyzer:
                         "task": task_name,
                         "reason": "completed"
                     })
-
         # Return statement is outside the for loop
         return all_transitions, actual_task_ranges
 
