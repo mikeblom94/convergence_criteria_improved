@@ -172,3 +172,5 @@ cython_debug/
 
 /sixDoF
 /postProcessing
+/convergence_plots
+/copied_foam_results

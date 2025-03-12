@@ -3,8 +3,10 @@ import matplotlib.pyplot as plt
 import os
 import re
 import pandas as pd
+import glob
 from collections import defaultdict
 from scipy import signal
+from pathlib import Path
 
 
 class ConvergenceAnalyzer:
@@ -105,20 +107,6 @@ class ConvergenceAnalyzer:
             normalized_cutoff = cutoff_freq / nyquist
             b, a = signal.butter(4, normalized_cutoff, btype='low')
             filtered_data = signal.filtfilt(b, a, values)
-
-            # import matplotlib.pyplot as plt
-            #
-            # # Plot
-            # plt.figure(figsize=(10, 5))
-            # plt.plot(times, filtered_data, marker='o', linestyle='-')
-            # # Labels and title
-            # plt.xlabel('Time')
-            # plt.ylabel('Oscillation Value')
-            # plt.title('Oscillation filtered data Over Time')
-            # plt.grid(True)
-            # # Show plot
-            # plt.show()
-
         except Exception as e:
             print(f"Warning: Filtering failed: {e}")
             return None, None, values
@@ -163,20 +151,6 @@ class ConvergenceAnalyzer:
         # Detect oscillation
         start_idx, end_idx, filtered_data = self.detect_oscillation(times, values, sampling_freq, cutoff_freq)
 
-        # if start_idx:
-        #     import matplotlib.pyplot as plt
-        #
-        #     # Plot
-        #     plt.figure(figsize=(10, 5))
-        #     plt.plot(times[start_idx:end_idx], values[start_idx:end_idx], marker='o', linestyle='-')
-        #     # Labels and title
-        #     plt.xlabel('Time')
-        #     plt.ylabel('Oscillation Value')
-        #     plt.title('Oscillation Values Over Time')
-        #     plt.grid(True)
-        #     # Show plot
-        #     plt.show()
-
         # Initialize statistics dictionary
         stats = {}
 
@@ -189,7 +163,6 @@ class ConvergenceAnalyzer:
         oscillation_values = values[start_idx:end_idx + 1]
 
         # Mean using trapezoidal integration for better accuracy
-        # Note: use trapezoid instead of trapz to avoid deprecation warning
         try:
             from scipy import integrate
             mean = integrate.trapezoid(oscillation_values, x=oscillation_times) / (oscillation_times[-1] - oscillation_times[0])
@@ -200,27 +173,12 @@ class ConvergenceAnalyzer:
         # Standard deviation over the oscillation
         std = np.std(oscillation_values, ddof=1)
 
-        # import matplotlib.pyplot as plt
-        #
-        # # Plot
-        # plt.figure(figsize=(10, 5))
-        # plt.plot(oscillation_times, oscillation_values, marker='o', linestyle='-')
-        # # Labels and title
-        # plt.xlabel('Time')
-        # plt.ylabel('Oscillation Value')
-        # plt.title('Oscillation Values Over Time')
-        # plt.grid(True)
-        # # Show plot
-        # plt.show()
-
         # Calculate slope over the entire dataset for trend analysis
-        # We use the entire dataset to see the overall trend, not just the oscillation
         lineregress = np.polyfit(times, values, 1)
         slope = lineregress[0]
         diff_height = slope * (times[-1] - times[0])
 
         # Store filtered data along with the times that correspond to it
-        # This way we can properly plot it later
         filtered_times = times
 
         # Assemble statistics
@@ -312,7 +270,7 @@ class ConvergenceAnalyzer:
     def check_convergence(self, quantity, times, values, start_time,
                           limit_std_dev, limit_diff_he, base_interval, relative=True,
                           detect_oscillations=False, cutoff_freq=0.2, attempt_number=0,
-                          use_slope_criteria=True):  # Added parameter to toggle slope criteria
+                          use_slope_criteria=True):
         """
         Check if a quantity meets convergence criteria with progressive interval expansion
 
@@ -372,7 +330,6 @@ class ConvergenceAnalyzer:
                 if osc_stats is not None:
                     stats = osc_stats
                     oscillation_detected = True
-                    # Don't print here, let the calling function handle logging
                 else:
                     # Not enough info to detect oscillation
                     return False, None, False
@@ -417,68 +374,79 @@ class ConvergenceAnalyzer:
         stats['limit_diff_he'] = limit_diff_he
         stats['interval_used'] = current_interval
         stats['attempt_number'] = attempt_number
-        stats['use_slope_criteria'] = use_slope_criteria  # Add flag to stats for reference
+        stats['use_slope_criteria'] = use_slope_criteria
 
         return converged, stats, oscillation_detected
 
-    # Add the new function to load and process the CSV file
-    def load_original_phase_summary(self, csv_file="original_phase_summary.csv"):
+    def load_original_phase_summary(self, log_file="watch.log"):
         """
-        Load and process the original phase summary CSV file.
+        Load and process the watch.log file to extract phase summary information.
 
         Parameters:
         -----------
-        csv_file : str
-            Path to the CSV file
+        log_file : str
+            Path to the watch.log file
 
         Returns:
         --------
         dict : Dictionary organized by quantity and phase, containing phase information
         """
-        if not os.path.exists(csv_file):
-            raise FileNotFoundError(f"Original phase summary file not found: {csv_file}")
-
-        # Load the CSV file using pandas
-        df = pd.read_csv(csv_file)
+        if not os.path.exists(log_file):
+            raise FileNotFoundError(f"Watch log file not found: {log_file}")
 
         # Initialize a nested dictionary to store the data
         phase_summary = {}
 
-        # Process each row in the CSV
-        for _, row in df.iterrows():
-            quantity = row['Quantity']
-            phase = row['Phase']
+        # Initialize quantities we need to track
+        for quantity in ["Fx", "WFT"]:
+            phase_summary[quantity] = {}
 
-            # Initialize the quantity dictionary if it doesn't exist
-            if quantity not in phase_summary:
-                phase_summary[quantity] = {}
+        # Read the log file
+        with open(log_file, 'r') as f:
+            lines = f.readlines()
 
-            # Check if values are strings and handle special cases
-            converged = row['Converged'] == 'Yes' if isinstance(row['Converged'], str) else row['Converged']
-            conv_time = row['Convergence Time']
-            conv_value = row['Convergence Value']
+        # We expect the data on the second line (after header)
+        if len(lines) < 2:
+            raise ValueError("Watch log file is empty or contains only header")
 
-            # Handle N/A or NA string values
-            if isinstance(conv_time, str) and conv_time.upper() in ['N/A', 'NA']:
-                conv_time = None
-            if isinstance(conv_value, str) and conv_value.upper() in ['N/A', 'NA']:
-                conv_value = None
+        # Parse data line
+        data_line = lines[1].strip()
+        tokens = data_line.split()
 
-            # Store the phase data
-            phase_summary[quantity][phase] = {
-                'start_time': row['Start Time'],
-                'end_time': row['End Time'],
-                'start_value': row['Start Value'],
-                'end_value': row['End Value'],
-                'converged': converged,
-                'convergence_time': conv_time if converged else None,
-                'convergence_value': conv_value if converged else None,
-                'time_saved': row['Time Saved']
+        # Define tasks to look for
+        tasks = ["velocityRamp", "largeTimeStep", "reduceTimeStep",
+                 "propulsionVariation", "final", "stopJob"]
+
+        cumulative_time = 0.0
+        phase_summary = defaultdict(dict)
+
+        for task in tasks:
+
+            task_line = tokens[tokens.index(task):]
+
+            task_time = float(task_line[1])
+            task_converged = task_line[3] == "CON"
+
+            # Calculate task start and end times
+            task_start = cumulative_time
+            task_end = cumulative_time + task_time
+            cumulative_time = task_end
+
+            # Add task information to phase summary for each quantity
+            phase_summary['Fx'][task] = {
+                'start_time': task_start,
+                'end_time': task_end,
+                'start_value': None,  # We don't have this info in log
+                'end_value': None,  # We don't have this info in log
+                'converged': task_converged,
+                'convergence_time': task_end if task_converged else None,
+                'convergence_value': None,  # We don't have this info in log
+                'time_saved': 0.0  # Will be calculated later if needed
             }
 
         return phase_summary
 
-    def analyze_convergence_multi_quantity(self, data_dict, tasks, required_convergence=None):
+    def analyze_convergence_multi_quantity(self, data_dict, tasks, required_convergence=None, phase_summary_file="watch.log"):
         """
         Analyze convergence across multiple quantities with properly implemented progressive interval
 
@@ -490,15 +458,21 @@ class ConvergenceAnalyzer:
             List of task dictionaries with configuration settings
         required_convergence : dict, optional
             Dictionary mapping task names to required quantities for convergence
+        phase_summary_file : str
+            Path to the original phase summary CSV file
 
         Returns:
         --------
-        tuple : (all_transitions, actual_task_ranges)
-            Transitions for all quantities and actual task time ranges
+        tuple : (all_transitions, actual_task_ranges, time_saving)
+            Transitions for all quantities, actual task time ranges, and time saved
         """
 
         # Load original phase summary from CSV
-        original_phase_summary = analyzer.load_original_phase_summary("original_phase_summary.csv")
+        try:
+            original_phase_summary = self.load_original_phase_summary(phase_summary_file)
+        except FileNotFoundError:
+            print(f"Warning: Could not find phase summary file: {phase_summary_file}")
+            original_phase_summary = {}  # Empty dict as fallback
 
         if required_convergence is None:
             # Default: each task requires convergence of all quantities analyzed
@@ -524,16 +498,23 @@ class ConvergenceAnalyzer:
             task_name = task.get('name', 'unknown')
             max_time = task.get('max_time', 0.0)
 
-            if task_name == "final":
-                print(f"\n=== Analyzing task: {task_name} ===")
-
             print(f"\n=== Analyzing task: {task_name} ===")
             print(f"  Start time: {current_time}")
 
-            if task_name == "propulsionVariation":
-                current_time = max(original_phase_summary['Fx']["largeTimeStep"]["end_time"], original_phase_summary['WFT']["largeTimeStep"]["end_time"])
-            if task_name == "final":
-                current_time = max(original_phase_summary['Fx']["propulsionVariation"]["end_time"], original_phase_summary['WFT']["propulsionVariation"]["end_time"])
+            # Set current time based on original phase summary if available
+            if task_name == "propulsionVariation" and original_phase_summary:
+                # Check if we have the necessary data in original_phase_summary
+                if 'Fx' in original_phase_summary and 'WFT' in original_phase_summary:
+                    if 'largeTimeStep' in original_phase_summary['Fx'] and 'largeTimeStep' in original_phase_summary['WFT']:
+                        current_time = max(original_phase_summary['Fx']["largeTimeStep"]["end_time"],
+                                           original_phase_summary['WFT']["largeTimeStep"]["end_time"])
+
+            if task_name == "final" and original_phase_summary:
+                # Check if we have the necessary data in original_phase_summary
+                if 'Fx' in original_phase_summary and 'WFT' in original_phase_summary:
+                    if 'propulsionVariation' in original_phase_summary['Fx'] and 'propulsionVariation' in original_phase_summary['WFT']:
+                        current_time = max(original_phase_summary['Fx']["propulsionVariation"]["end_time"],
+                                           original_phase_summary['WFT']["propulsionVariation"]["end_time"])
 
             # Record task start for each quantity
             for quantity in data_dict.keys():
@@ -824,14 +805,249 @@ class ConvergenceAnalyzer:
             if next_start > current_end:
                 time_saving += next_start - current_end
 
-        # Return statement is outside the for loop
         return all_transitions, actual_task_ranges, time_saving
 
 
-if __name__ == "__main__":
-    # Initialize analyzer
-    analyzer = ConvergenceAnalyzer()
+class MultiSimulationAnalyzer:
+    """
+    Class to handle multiple simulation analyses
+    """
 
+    def __init__(self, root_dir="./copied_foam_results/489_MSC/131_ECO-Retrofit_WEC-VAN-RUYSDAEL"):
+        """
+        Initialize the multi-simulation analyzer
+
+        Parameters:
+        -----------
+        root_dir : str
+            Root directory containing simulation folders
+        """
+        self.root_dir = root_dir
+        self.simulation_dirs = []
+        self.results = {}
+
+    def find_simulation_folders(self):
+        """
+        Find all simulation folders in the root directory
+
+        Returns:
+        --------
+        list : Paths to simulation folders
+        """
+        print(f"Searching for simulation folders in: {self.root_dir}")
+
+        # Use Path for better cross-platform compatibility
+        root = Path(self.root_dir)
+
+        if not root.exists():
+            raise FileNotFoundError(f"Root directory not found: {self.root_dir}")
+
+        # Find all folders that contain both sixDoF and postProcessing
+        sim_folders = []
+
+        for folder in root.iterdir():
+            if not folder.is_dir():
+                continue
+
+            # Check if this folder contains the required subfolders and CSV file
+            has_sixdof = (folder / "sixDoF").exists()
+            has_postprocessing = (folder / "postProcessing").exists()
+            has_csv = any((folder / f).exists() for f in ["convergence_summary.csv", "original_phase_summary.csv"])
+
+            if has_sixdof and has_postprocessing and has_csv:
+                sim_folders.append(folder)
+                print(f"Found simulation folder: {folder}")
+
+        if not sim_folders:
+            print(f"Warning: No simulation folders found in {self.root_dir}")
+        else:
+            print(f"Found {len(sim_folders)} simulation folders")
+
+        self.simulation_dirs = sim_folders
+        return sim_folders
+
+    def process_simulation(self, sim_folder, tasks, required_convergence=None):
+        """
+        Process a single simulation folder
+
+        Parameters:
+        -----------
+        sim_folder : str or Path
+            Path to simulation folder
+        tasks : list
+            List of task dictionaries with configuration settings
+        required_convergence : dict, optional
+            Dictionary mapping task names to required quantities for convergence
+
+        Returns:
+        --------
+        dict : Results for this simulation
+        """
+        sim_folder = Path(sim_folder) if isinstance(sim_folder, str) else sim_folder
+        sim_name = sim_folder.name
+
+        print(f"\n{'=' * 80}")
+        print(f"Processing simulation: {sim_name}")
+        print(f"{'=' * 80}")
+
+        # Initialize analyzer for this simulation
+        analyzer = ConvergenceAnalyzer()
+
+        # Find CSV file (either convergence_summary.csv or original_phase_summary.csv)
+        watchlog_file = None
+        for candidate in ["watch.log"]:
+            if (sim_folder / candidate).exists():
+                watchlog_file = str(sim_folder / candidate)
+                break
+
+        if not watchlog_file:
+            print(f"Warning: No summary CSV file found in {sim_folder}")
+            return None
+
+        print(f"Using summary file: {watchlog_file}")
+
+        # Try to load data files for this simulation
+        try:
+            data_dict = {
+                "Fx": analyzer.load_data(str(sim_folder / "sixDoF/HULL/0/forces.dat"), time_col=0, data_col=1),
+                "FxP": analyzer.load_data(str(sim_folder / "sixDoF/HULL/0/forcesPV.dat"), time_col=0, data_col=1),
+                "FxV": analyzer.load_data(str(sim_folder / "sixDoF/HULL/0/forcesPV.dat"), time_col=0, data_col=7),
+                "Trim": analyzer.load_data(str(sim_folder / "sixDoF/HULL/0/position.dat"), time_col=0, data_col=5),
+                "Sinkage": analyzer.load_data(str(sim_folder / "postProcessing/sinkage/0/relativeMotion.dat"), time_col=0, data_col=3),
+                "WFT": analyzer.load_data(str(sim_folder / "postProcessing/wake/0/volFieldValue.dat"), time_col=0, data_col=1),
+                "Wetted": analyzer.load_data(str(sim_folder / "postProcessing/wettedSurface/0/surfaceFieldValue.dat"), time_col=0, data_col=1)
+            }
+
+            # Filter out any data that couldn't be loaded
+            valid_data_dict = {k: v for k, v in data_dict.items() if v is not None}
+
+            if not valid_data_dict:
+                print(f"Warning: No valid data files found in {sim_folder}")
+                return None
+
+            print(f"Loaded data for quantities: {', '.join(valid_data_dict.keys())}")
+
+            # Analyze convergence
+            all_transitions, actual_task_ranges, time_saving = analyzer.analyze_convergence_multi_quantity(
+                valid_data_dict,
+                tasks,
+                required_convergence,
+                phase_summary_file=watchlog_file
+            )
+
+            print(f"\nResults for simulation {sim_name}:")
+            print(f"Time saving: {time_saving:.2f} seconds")
+
+            # Get the total simulation time (end of final task)
+            if 'final' in actual_task_ranges:
+                total_time = actual_task_ranges['final']['end']
+                print(f"That is {time_saving / total_time:.2%} of the total simulation time")
+
+            # Store results for this simulation
+            sim_results = {
+                "name": sim_name,
+                "transitions": all_transitions,
+                "task_ranges": actual_task_ranges,
+                "time_saving": time_saving,
+                "time_saving_percentage": time_saving / total_time if 'final' in actual_task_ranges else None
+            }
+
+            return sim_results
+
+        except Exception as e:
+            print(f"Error processing simulation {sim_name}: {str(e)}")
+            return None
+
+    def process_all_simulations(self, tasks, required_convergence=None):
+        """
+        Process all simulation folders
+
+        Parameters:
+        -----------
+        tasks : list
+            List of task dictionaries with configuration settings
+        required_convergence : dict, optional
+            Dictionary mapping task names to required quantities for convergence
+
+        Returns:
+        --------
+        dict : Results for all simulations
+        """
+        if not self.simulation_dirs:
+            self.find_simulation_folders()
+
+        if not self.simulation_dirs:
+            print("No simulation folders found, aborting.")
+            return {}
+
+        # Process each simulation folder
+        all_results = {}
+
+        for sim_folder in self.simulation_dirs:
+            sim_results = self.process_simulation(sim_folder, tasks, required_convergence)
+
+            if sim_results:
+                all_results[sim_folder.name] = sim_results
+
+        # Summarize results
+        print("\n" + "=" * 80)
+        print(f"Processed {len(all_results)} simulations successfully")
+        print("=" * 80)
+
+        # Calculate average time saving
+        if all_results:
+            avg_time_saving = np.mean([r["time_saving"] for r in all_results.values() if r["time_saving"] is not None])
+            avg_percentage = np.mean([r["time_saving_percentage"] for r in all_results.values()
+                                      if r["time_saving_percentage"] is not None])
+
+            print(f"Average time saving: {avg_time_saving:.2f} seconds ({avg_percentage:.2%} of total simulation time)")
+
+        self.results = all_results
+        return all_results
+
+    def export_results_to_csv(self, output_file="multi_simulation_results.csv"):
+        """
+        Export summary results to a CSV file
+
+        Parameters:
+        -----------
+        output_file : str
+            Path to output CSV file
+        """
+        if not self.results:
+            print("No results to export")
+            return
+
+        # Prepare data for CSV
+        data = []
+
+        for sim_name, sim_results in self.results.items():
+            # Get task convergence times
+            task_data = {}
+
+            for task_name, task_range in sim_results["task_ranges"].items():
+                task_data[f"{task_name}_start"] = task_range["start"]
+                task_data[f"{task_name}_end"] = task_range["end"]
+                task_data[f"{task_name}_duration"] = task_range["end"] - task_range["start"]
+
+            # Add row for this simulation
+            row = {
+                "simulation": sim_name,
+                "time_saving": sim_results["time_saving"],
+                "time_saving_percentage": sim_results["time_saving_percentage"]
+            }
+            row.update(task_data)
+
+            data.append(row)
+
+        # Create DataFrame and save to CSV
+        df = pd.DataFrame(data)
+        df.to_csv(output_file, index=False)
+
+        print(f"Results exported to {output_file}")
+
+
+if __name__ == "__main__":
     # Example configuration with oscillation detection and optional slope criteria
     tasks = [
         {"name": "velocityRamp", "max_time": 74.08},
@@ -839,12 +1055,12 @@ if __name__ == "__main__":
             "name": "largeTimeStep",
             "max_time": 207.36,
             "std_limit": 1.0,
-            "slope_limit": 0.25,  # Still needed even if use_slope_criteria is False
+            "slope_limit": 0.25,
             "interval": 10.00,
             "use_oscillation_detection": True,
             "oscillation_quantities": ["Fx"],
             "oscillation_cutoff_freq": 0.2,
-            "use_slope_criteria": False  # Disabling slope criteria for this task
+            "use_slope_criteria": False
         },
         {"name": "reduceTimeStep"},
         {
@@ -856,7 +1072,7 @@ if __name__ == "__main__":
             "use_oscillation_detection": True,
             "oscillation_quantities": ["Fx", "WFT"],
             "oscillation_cutoff_freq": 0.15,
-            "use_slope_criteria": False  # Disabling slope criteria for this task
+            "use_slope_criteria": False
         },
         {
             "name": "final",
@@ -867,7 +1083,7 @@ if __name__ == "__main__":
             "use_oscillation_detection": True,
             "oscillation_quantities": ["Fx", "WFT"],
             "oscillation_cutoff_freq": 0.15,
-            "use_slope_criteria": False  # Disabling slope criteria for this task
+            "use_slope_criteria": False
         },
         {"name": "stopJob"},
     ]
@@ -879,28 +1095,14 @@ if __name__ == "__main__":
         "final": ["Fx", "WFT"]  # final also requires BOTH Fx AND WFT to converge
     }
 
-    try:
-        # Load data for each quantity
-        data_dict = {
-            "Fx": analyzer.load_data("sixDoF/HULL/0/forces.dat", time_col=0, data_col=1),
-            "FxP": analyzer.load_data("sixDoF/HULL/0/forcesPV.dat", time_col=0, data_col=1),
-            "FxV": analyzer.load_data("sixDoF/HULL/0/forcesPV.dat", time_col=0, data_col=7),
-            "Trim": analyzer.load_data("sixDoF/HULL/0/position.dat", time_col=0, data_col=5),
-            "Sinkage": analyzer.load_data("postProcessing/sinkage/0/relativeMotion.dat", time_col=0, data_col=3),
-            "WFT": analyzer.load_data("postProcessing/wake/0/volFieldValue.dat", time_col=0, data_col=1),
-            "Wetted": analyzer.load_data("postProcessing/wettedSurface/0/surfaceFieldValue.dat", time_col=0, data_col=1)
-        }
+    # Initialize multi-simulation analyzer
+    multi_analyzer = MultiSimulationAnalyzer()
 
-        # Analyze convergence across all quantities
-        all_transitions, actual_task_ranges, time_saving = analyzer.analyze_convergence_multi_quantity(
-            data_dict,
-            tasks,
-            required_convergence
-        )
+    # Find simulation folders
+    multi_analyzer.find_simulation_folders()
 
-        print(f"Time saving: {time_saving:.2f} seconds")
-        print(f"That is {time_saving / actual_task_ranges['final']['end']:.2%} of the total simulation time")
+    # Process all simulations
+    results = multi_analyzer.process_all_simulations(tasks, required_convergence)
 
-    except FileNotFoundError as e:
-        print(f"Error: {e}")
-        print("Falling back to synthetic data for demonstration...")
+    # Export results to CSV
+    multi_analyzer.export_results_to_csv()
