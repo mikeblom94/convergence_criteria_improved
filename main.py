@@ -110,12 +110,16 @@ class ConvergenceAnalyzer:
             normalized_cutoff = cutoff_freq / nyquist
             b, a = signal.butter(4, normalized_cutoff, btype='low')
             filtered_data = signal.filtfilt(b, a, values)
+
+
         except Exception as e:
             print(f"Warning: Filtering failed: {e}")
             return None, None, values
 
+        mean_idx = np.argmin(np.abs(times - (times[-1]-9.5)))
+
         # Find zero crossings to identify oscillations (centered around mean)
-        zero_crossings = np.where(np.diff(np.signbit(filtered_data - np.mean(filtered_data))))[0]
+        zero_crossings = np.where(np.diff(np.signbit(filtered_data - np.mean(filtered_data[mean_idx:-1]))))[0]
         # If we don't find enough zero crossings for a full oscillation, try peak detection
         if len(zero_crossings) < 3:  # Need at least 3 crossings for a full oscillation
             return None, None, filtered_data
@@ -126,6 +130,32 @@ class ConvergenceAnalyzer:
                 # Take the last full oscillation
                 start_idx = zero_crossings[-3]
                 end_idx = zero_crossings[-1]
+
+                # Create a figure with two subplots
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+
+                # Plot original and filtered data in the first subplot
+                ax1.plot(times, values, label="Original Data")
+                ax1.plot(times, filtered_data, label="Filtered Data")
+                ax1.set_xlabel("Time [s]")
+                ax1.set_ylabel("Value")
+                ax1.axhline(y=np.mean(filtered_data[mean_idx:-1]), color='r', linestyle='--', label="Mean")
+                ax1.legend()
+
+                # Plot zoomed-in data in the second subplot
+                ax2.plot(times[start_idx:end_idx], values[start_idx:end_idx], label="Original Data")
+                ax2.plot(times[start_idx:end_idx], filtered_data[start_idx:end_idx], label="Filtered Data")
+                ax2.set_xlabel("Time [s]")
+                ax2.set_ylabel("Value")
+                ax2.axhline(y=np.mean(filtered_data[mean_idx:-1]), color='r', linestyle='--', label="Mean")
+                ax2.legend()
+
+                # Show the figure with subplots
+                plt.tight_layout()
+                plt.show()
+
+
+
             else:
                 # Not enough zero crossings
                 return None, None, filtered_data
@@ -420,7 +450,6 @@ class ConvergenceAnalyzer:
         phase_summary = defaultdict(dict)
 
         for task in tasks:
-
             task_line = tokens[tokens.index(task):]
 
             task_time = float(task_line[1])
@@ -445,8 +474,123 @@ class ConvergenceAnalyzer:
 
         return phase_summary
 
+    def plot_convergence(self, data_dict, actual_task_ranges, quantities=None, save_plots=False, output_dir=None):
+        """
+        Plot the convergence of selected quantities over time with phase boundaries.
+
+        Parameters:
+        -----------
+        data_dict : dict
+            Dictionary mapping quantity names to (times, values) tuples
+        actual_task_ranges : dict
+            Dictionary of phase start and end times
+        quantities : list or None
+            List of quantities to plot, if None plots Fx and WFT if available
+        save_plots : bool
+            Whether to save the plots to files
+        output_dir : str
+            Directory to save plots to, if None uses current directory
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+        from pathlib import Path
+
+        # Default to Fx and WFT if available
+        if quantities is None:
+            quantities = []
+            if 'Fx' in data_dict:
+                quantities.append('Fx')
+            if 'WFT' in data_dict:
+                quantities.append('WFT')
+
+        # Ensure quantities exist in data_dict
+        quantities = [q for q in quantities if q in data_dict]
+        if not quantities:
+            print("No valid quantities to plot")
+            return
+
+        # Prepare colors for different phases
+        phase_colors = {
+            'velocityRamp': 'tab:blue',
+            'largeTimeStep': 'tab:green',
+            'propulsionVariation': 'tab:purple',
+            'final': 'tab:orange'
+        }
+
+        # Define line styles for different boundary types
+        boundary_styles = {
+            'start': ':',  # dotted
+            'end': '--',  # dashed
+            'end_original': '-.'  # dash-dot
+        }
+
+        # Create a figure for each quantity
+        for quantity in quantities:
+            plt.figure(figsize=(15, 7))
+            times, values = data_dict[quantity]
+
+            # Plot the main data
+            plt.plot(times, values, 'tab:red', label=quantity, linewidth=2)
+
+            # Collect all boundary times for setting x-axis limits
+            all_boundaries = []
+
+            # Add vertical lines for phase boundaries
+            for phase, ranges in actual_task_ranges.items():
+                for boundary_type in ['start', 'end', 'end_original']:
+                    if boundary_type in ranges:
+                        # Convert numpy.float64 to regular float if needed
+                        boundary_value = float(ranges[boundary_type])
+                        all_boundaries.append(boundary_value)
+
+                        plt.axvline(
+                            x=boundary_value,
+                            color=phase_colors.get(phase, 'gray'),
+                            linestyle=boundary_styles[boundary_type],
+                            label=f"{phase} {boundary_type.replace('_', ' ')}",
+                            alpha=0.7
+                        )
+
+            # Calculate reasonable x-axis limits based on phase boundaries
+            if all_boundaries:
+                x_min = max(0, min(all_boundaries) - 10)  # Start a bit before first boundary
+                x_max = max(all_boundaries) + 10  # End a bit after last boundary
+                plt.xlim(x_min, x_max)
+
+                # Find suitable y-axis limits
+                mask = (times >= x_min) & (times <= x_max)
+                if np.any(mask):
+                    masked_values = values[mask]
+                    y_margin = (np.max(masked_values) - np.min(masked_values)) * 0.1
+                    y_min = np.min(masked_values) - y_margin
+                    y_max = np.max(masked_values) + y_margin
+                    plt.ylim(y_min, y_max)
+
+            # Add labels and legend
+            plt.xlabel('Time (s)', fontsize=12)
+            plt.ylabel(f'{quantity} Value', fontsize=12)
+            plt.title(f'{quantity} Convergence Over Time', fontsize=14)
+
+            # Add a legend but handle potential duplicates
+            handles, labels = plt.gca().get_legend_handles_labels()
+            by_label = dict(zip(labels, handles))
+            plt.legend(by_label.values(), by_label.keys(), loc='best', fontsize=10)
+
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+
+            # Save plot if requested
+            if save_plots:
+                if output_dir is None:
+                    output_dir = '.'
+                output_path = Path(output_dir) / f'{quantity}_convergence.png'
+                plt.savefig(output_path, dpi=300, bbox_inches='tight')
+                print(f"Saved plot to {output_path}")
+
+            plt.show()
+
     def analyze_convergence_multi_quantity(self, data_dict, tasks, required_convergence=None, phase_summary_file="watch.log",
-                                           original_results="CWBot.results"):
+                                           original_results="CWBot.results", plot_results=True, save_plots=False, output_dir=None):
         """
         Analyze convergence across multiple quantities with properly implemented progressive interval
 
@@ -460,6 +604,12 @@ class ConvergenceAnalyzer:
             Dictionary mapping task names to required quantities for convergence
         phase_summary_file : str
             Path to the original phase summary CSV file
+        plot_results : bool
+            Whether to plot the convergence results
+        save_plots : bool
+            Whether to save the plots to files
+        output_dir : str
+            Directory to save plots to, if None uses current directory
 
         Returns:
         --------
@@ -578,8 +728,6 @@ class ConvergenceAnalyzer:
 
             # Store the initial task range
             actual_task_ranges[task_name] = {"start": current_time, "end": end_time}
-
-
 
             # If we need to check convergence
             if all(k in task for k in ['std_limit', 'slope_limit', 'interval']):
@@ -792,10 +940,10 @@ class ConvergenceAnalyzer:
                     if original_phase_summary['largeTimeStep']['end_time'] > convergence_time:
                         print(f"  Task {task_name} converged early at {convergence_time}, skipping ahead to next task")
                     else:
-                        print(f"  Task {task_name} converged at {convergence_time}, original end time: {original_phase_summary['largeTimeStep']['end_time']} was better")
+                        print(f"  Task {task_name} converged at {convergence_time}, original end time: {original_phase_summary[f'{task_name}']['end_time']} was better")
 
                     # Update the actual end time for this task
-                    actual_task_ranges[task_name]["end"] = convergence_time
+                    actual_task_ranges[task_name]["end"] = round(convergence_time, 2)
                     actual_task_ranges[task_name]["end_original"] = original_phase_summary[task_name]["end_time"]
 
                     # Record task end for each quantity at convergence time
@@ -862,30 +1010,19 @@ class ConvergenceAnalyzer:
                 end_value = values[end_idx]
                 original_end_value = values[original_end_idx]
 
-                #check value wrt cWBot.results
+                # check value wrt cWBot.results
                 if quantity in tasks_dict[phase]["checks"]:
                     check = tasks_dict[phase]["checks"][quantity]
                     check_value = check["mean"]
 
                 value_difference[quantity][phase] = (end_value - original_end_value) / original_end_value * 100
-
-
-                # # plot the values
-                # plt.plot(times[0:end_idx], values[0:end_idx], label=quantity)
-                # plt.axvline(x=end_time, color='r', linestyle='--', label='end time')
-                # plt.axvline(x=original_end_time, color='g', linestyle='--', label='original end time')
-                # plt.axhline(y=end_value, color='b', linestyle='--', label='end value')
-                # plt.axhline(y=original_end_value, color='m', linestyle='--', label='original end value')
-                # plt.title(f"{quantity} - {phase}")
-                # plt.legend()
-                #
-                # # Set y boundaries
-                # y_min = min(end_value, original_end_value) * 0.9
-                # y_max = max(end_value, original_end_value) * 1.1
-                # plt.ylim(y_min, y_max)
-                #
-                # plt.show()
             ic(value_difference)
+
+        # Plot results if requested
+        if plot_results:
+            self.plot_convergence(data_dict, actual_task_ranges, quantities=['Fx', 'WFT'],
+                                  save_plots=save_plots, output_dir=output_dir)
+
         return all_transitions, actual_task_ranges, time_saving
 
 
@@ -947,7 +1084,7 @@ class MultiSimulationAnalyzer:
         self.simulation_dirs = sim_folders
         return sim_folders
 
-    def process_simulation(self, sim_folder, tasks, required_convergence=None):
+    def process_simulation(self, sim_folder, tasks, required_convergence=None, plot_results=True, save_plots=False, output_dir=None):
         """
         Process a single simulation folder
 
@@ -959,6 +1096,12 @@ class MultiSimulationAnalyzer:
             List of task dictionaries with configuration settings
         required_convergence : dict, optional
             Dictionary mapping task names to required quantities for convergence
+        plot_results : bool
+            Whether to plot the convergence results
+        save_plots : bool
+            Whether to save the plots to files
+        output_dir : str
+            Directory to save plots to, if None uses current directory
 
         Returns:
         --------
@@ -988,6 +1131,13 @@ class MultiSimulationAnalyzer:
 
         print(f"Using summary file: {watchlog_file}")
 
+        # Set output directory for this simulation if saving plots
+        if save_plots and output_dir is None:
+            sim_output_dir = sim_folder / "plots"
+            os.makedirs(sim_output_dir, exist_ok=True)
+        else:
+            sim_output_dir = output_dir
+
         # Try to load data files for this simulation
         try:
             data_dict = {
@@ -1015,33 +1165,36 @@ class MultiSimulationAnalyzer:
                 tasks,
                 required_convergence,
                 phase_summary_file=watchlog_file,
-                original_results=cwbot_file
+                original_results=cwbot_file,
+                plot_results=plot_results,
+                save_plots=save_plots,
+                output_dir=sim_output_dir
             )
 
             print(f"\nResults for simulation {sim_name}:")
-            print(f"Time saving: {time_saving:.2f} seconds")
 
             # Get the total simulation time (end of final task)
             if 'final' in actual_task_ranges:
                 total_time = actual_task_ranges['final']['end']
-                print(f"That is {time_saving / total_time:.2%} of the total simulation time")
 
             # Store results for this simulation
             sim_results = {
                 "name": sim_name,
                 "transitions": all_transitions,
                 "task_ranges": actual_task_ranges,
-                "time_saving": time_saving,
-                "time_saving_percentage": time_saving / total_time if 'final' in actual_task_ranges else None
+                "time_saving": sum(time_saving.values()) if time_saving else None,
+                "time_saving_percentage": sum(time_saving.values()) / total_time * 100 if time_saving and total_time else None
             }
 
             return sim_results
 
         except Exception as e:
             print(f"Error processing simulation {sim_name}: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return None
 
-    def process_all_simulations(self, tasks, required_convergence=None):
+    def process_all_simulations(self, tasks, required_convergence=None, plot_results=True, save_plots=False, output_dir=None):
         """
         Process all simulation folders
 
@@ -1051,6 +1204,12 @@ class MultiSimulationAnalyzer:
             List of task dictionaries with configuration settings
         required_convergence : dict, optional
             Dictionary mapping task names to required quantities for convergence
+        plot_results : bool
+            Whether to plot the convergence results
+        save_plots : bool
+            Whether to save the plots to files
+        output_dir : str
+            Directory to save plots to, if None uses current directory
 
         Returns:
         --------
@@ -1063,11 +1222,22 @@ class MultiSimulationAnalyzer:
             print("No simulation folders found, aborting.")
             return {}
 
+        # Create output directory if saving plots
+        if save_plots and output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
         # Process each simulation folder
         all_results = {}
 
         for sim_folder in self.simulation_dirs:
-            sim_results = self.process_simulation(sim_folder, tasks, required_convergence)
+            sim_results = self.process_simulation(
+                sim_folder,
+                tasks,
+                required_convergence,
+                plot_results=plot_results,
+                save_plots=save_plots,
+                output_dir=output_dir
+            )
 
             if sim_results:
                 all_results[sim_folder.name] = sim_results
@@ -1139,7 +1309,7 @@ if __name__ == "__main__":
             "max_time": 207.36,
             "std_limit": 1.0,
             "slope_limit": 0.25,
-            "interval": 10.00,
+            "interval": 1.00,
             "use_oscillation_detection": True,
             "oscillation_quantities": ["Fx"],
             "oscillation_cutoff_freq": 0.2,
@@ -1150,7 +1320,7 @@ if __name__ == "__main__":
             "max_time": 259.2,
             "std_limit": 0.5,
             "slope_limit": 0.125,
-            "interval": 10.0,
+            "interval": 1.0,
             "use_oscillation_detection": True,
             "oscillation_quantities": ["Fx", "WFT"],
             "oscillation_cutoff_freq": 0.15,
@@ -1161,7 +1331,7 @@ if __name__ == "__main__":
             "max_time": 259.2,
             "std_limit": 0.5,
             "slope_limit": 0.125,
-            "interval": 10.0,
+            "interval": 1.0,
             "use_oscillation_detection": True,
             "oscillation_quantities": ["Fx", "WFT"],
             "oscillation_cutoff_freq": 0.15,
@@ -1176,14 +1346,47 @@ if __name__ == "__main__":
         "final": ["Fx", "WFT"]  # final also requires BOTH Fx AND WFT to converge
     }
 
-    # Initialize multi-simulation analyzer
-    multi_analyzer = MultiSimulationAnalyzer()
+    # Create output directory for plots
+    output_dir = "./convergence_plots"
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Find simulation folders
-    multi_analyzer.find_simulation_folders()
+    # Run for a single simulation if testing
+    if False:  # Set to True for testing a single simulation
+        analyzer = ConvergenceAnalyzer()
 
-    # Process all simulations
-    results = multi_analyzer.process_all_simulations(tasks, required_convergence)
+        # Specify the simulation folder to test
+        sim_folder = "./path/to/your/simulation"
 
-    # Export results to CSV
-    multi_analyzer.export_results_to_csv()
+        data_dict = {
+            "Fx": analyzer.load_data(f"{sim_folder}/sixDoF/HULL/0/forces.dat", time_col=0, data_col=1),
+            "WFT": analyzer.load_data(f"{sim_folder}/postProcessing/wake/0/volFieldValue.dat", time_col=0, data_col=1),
+        }
+
+        all_transitions, actual_task_ranges, time_saving = analyzer.analyze_convergence_multi_quantity(
+            data_dict,
+            tasks,
+            required_convergence,
+            phase_summary_file=f"{sim_folder}/watch.log",
+            original_results=f"{sim_folder}/CWBot.results",
+            plot_results=True,
+            save_plots=True,
+            output_dir=f"{sim_folder}/plots"
+        )
+    else:
+        # Initialize multi-simulation analyzer
+        multi_analyzer = MultiSimulationAnalyzer()
+
+        # Find simulation folders
+        multi_analyzer.find_simulation_folders()
+
+        # Process all simulations with plotting enabled
+        results = multi_analyzer.process_all_simulations(
+            tasks,
+            required_convergence,
+            plot_results=False,
+            save_plots=True,
+            output_dir=output_dir
+        )
+
+        # Export results to CSV
+        multi_analyzer.export_results_to_csv()
