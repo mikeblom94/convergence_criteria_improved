@@ -131,28 +131,28 @@ class ConvergenceAnalyzer:
                 start_idx = zero_crossings[-3]
                 end_idx = zero_crossings[-1]
 
-                # Create a figure with two subplots
-                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
-
-                # Plot original and filtered data in the first subplot
-                ax1.plot(times, values, label="Original Data")
-                ax1.plot(times, filtered_data, label="Filtered Data")
-                ax1.set_xlabel("Time [s]")
-                ax1.set_ylabel("Value")
-                ax1.axhline(y=np.mean(filtered_data[mean_idx:-1]), color='r', linestyle='--', label="Mean")
-                ax1.legend()
-
-                # Plot zoomed-in data in the second subplot
-                ax2.plot(times[start_idx:end_idx], values[start_idx:end_idx], label="Original Data")
-                ax2.plot(times[start_idx:end_idx], filtered_data[start_idx:end_idx], label="Filtered Data")
-                ax2.set_xlabel("Time [s]")
-                ax2.set_ylabel("Value")
-                ax2.axhline(y=np.mean(filtered_data[mean_idx:-1]), color='r', linestyle='--', label="Mean")
-                ax2.legend()
-
-                # Show the figure with subplots
-                plt.tight_layout()
-                plt.show()
+                # # Create a figure with two subplots
+                # fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+                #
+                # # Plot original and filtered data in the first subplot
+                # ax1.plot(times, values, label="Original Data")
+                # ax1.plot(times, filtered_data, label="Filtered Data")
+                # ax1.set_xlabel("Time [s]")
+                # ax1.set_ylabel("Value")
+                # ax1.axhline(y=np.mean(filtered_data[mean_idx:-1]), color='r', linestyle='--', label="Mean")
+                # ax1.legend()
+                #
+                # # Plot zoomed-in data in the second subplot
+                # ax2.plot(times[start_idx:end_idx], values[start_idx:end_idx], label="Original Data")
+                # ax2.plot(times[start_idx:end_idx], filtered_data[start_idx:end_idx], label="Filtered Data")
+                # ax2.set_xlabel("Time [s]")
+                # ax2.set_ylabel("Value")
+                # ax2.axhline(y=np.mean(filtered_data[mean_idx:-1]), color='r', linestyle='--', label="Mean")
+                # ax2.legend()
+                #
+                # # Show the figure with subplots
+                # plt.tight_layout()
+                # plt.show()
 
 
 
@@ -477,6 +477,7 @@ class ConvergenceAnalyzer:
     def plot_convergence(self, data_dict, actual_task_ranges, quantities=None, save_plots=False, output_dir=None):
         """
         Plot the convergence of selected quantities over time with phase boundaries.
+        Includes a subfigure that zooms in on the final phase.
 
         Parameters:
         -----------
@@ -526,16 +527,17 @@ class ConvergenceAnalyzer:
 
         # Create a figure for each quantity
         for quantity in quantities:
-            plt.figure(figsize=(15, 7))
+            # Create a figure with two subplots (main plot and zoomed view)
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(15, 10), gridspec_kw={'height_ratios': [2, 1]})
             times, values = data_dict[quantity]
 
-            # Plot the main data
-            plt.plot(times, values, 'tab:red', label=quantity, linewidth=2)
+            # Plot the main data on the first subplot
+            ax1.plot(times, values, 'tab:red', label=quantity, linewidth=2)
 
             # Collect all boundary times for setting x-axis limits
             all_boundaries = []
 
-            # Add vertical lines for phase boundaries
+            # Add vertical lines for phase boundaries on the main plot
             for phase, ranges in actual_task_ranges.items():
                 for boundary_type in ['start', 'end', 'end_original']:
                     if boundary_type in ranges:
@@ -543,7 +545,7 @@ class ConvergenceAnalyzer:
                         boundary_value = float(ranges[boundary_type])
                         all_boundaries.append(boundary_value)
 
-                        plt.axvline(
+                        ax1.axvline(
                             x=boundary_value,
                             color=phase_colors.get(phase, 'gray'),
                             linestyle=boundary_styles[boundary_type],
@@ -551,39 +553,98 @@ class ConvergenceAnalyzer:
                             alpha=0.7
                         )
 
-            # Calculate reasonable x-axis limits based on phase boundaries
+            # Calculate reasonable x-axis limits based on phase boundaries for main plot
             if all_boundaries:
                 x_min = max(0, min(all_boundaries) - 10)  # Start a bit before first boundary
                 x_max = max(all_boundaries) + 10  # End a bit after last boundary
-                plt.xlim(x_min, x_max)
+                ax1.set_xlim(x_min, x_max)
 
-                # Find suitable y-axis limits
+                # Find suitable y-axis limits for main plot
                 mask = (times >= x_min) & (times <= x_max)
                 if np.any(mask):
                     masked_values = values[mask]
                     y_margin = (np.max(masked_values) - np.min(masked_values)) * 0.1
                     y_min = np.min(masked_values) - y_margin
                     y_max = np.max(masked_values) + y_margin
-                    plt.ylim(y_min, y_max)
+                    ax1.set_ylim(y_min, y_max)
 
-            # Add labels and legend
-            plt.xlabel('Time (s)', fontsize=12)
-            plt.ylabel(f'{quantity} Value', fontsize=12)
-            plt.title(f'{quantity} Convergence Over Time', fontsize=14)
+            # Add labels and legend to main plot
+            ax1.set_xlabel('Time (s)', fontsize=12)
+            ax1.set_ylabel(f'{quantity} Value', fontsize=12)
+            ax1.set_title(f'{quantity} Convergence Over Time', fontsize=14)
+            ax1.grid(True, alpha=0.3)
 
-            # Add a legend but handle potential duplicates
-            handles, labels = plt.gca().get_legend_handles_labels()
+            # Add a legend but handle potential duplicates for main plot
+            handles, labels = ax1.get_legend_handles_labels()
             by_label = dict(zip(labels, handles))
-            plt.legend(by_label.values(), by_label.keys(), loc='best', fontsize=10)
+            ax1.legend(by_label.values(), by_label.keys(), loc='best', fontsize=10)
 
-            plt.grid(True, alpha=0.3)
+            # Create zoomed view on the second subplot - focusing on the final phase
+            if 'final' in actual_task_ranges:
+                # Get the final phase boundaries
+                final_start = actual_task_ranges['final']['start']
+                final_end = actual_task_ranges['final']['end']
+
+                # If there's an original end time, include it in the zoomed view
+                if 'end_original' in actual_task_ranges['final']:
+                    final_end_original = actual_task_ranges['final']['end_original']
+                    zoom_end = max(final_end, final_end_original) + 5  # Add a bit of padding
+                else:
+                    zoom_end = final_end + 5
+
+                zoom_start = final_start - 5  # Start a bit before the final phase
+
+                # Plot the zoomed data
+                ax2.plot(times, values, 'tab:red', linewidth=2)
+
+                # Add vertical lines for final phase boundaries in zoomed view
+                for boundary_type in ['start', 'end', 'end_original']:
+                    if boundary_type in actual_task_ranges['final']:
+                        boundary_value = float(actual_task_ranges['final'][boundary_type])
+                        ax2.axvline(
+                            x=boundary_value,
+                            color=phase_colors.get('final', 'tab:orange'),
+                            linestyle=boundary_styles[boundary_type],
+                            label=f"final {boundary_type.replace('_', ' ')}",
+                            alpha=0.7
+                        )
+
+                # Set the zoom range
+                ax2.set_xlim(zoom_start, zoom_end)
+
+                # Get the y-axis range for the zoomed area
+                zoom_mask = (times >= zoom_start) & (times <= zoom_end)
+                if np.any(zoom_mask):
+                    zoom_values = values[zoom_mask]
+                    y_margin = (np.max(zoom_values) - np.min(zoom_values)) * 0.1
+                    zoom_y_min = np.min(zoom_values) - y_margin
+                    zoom_y_max = np.max(zoom_values) + y_margin
+                    ax2.set_ylim(zoom_y_min, zoom_y_max)
+
+                # Add labels and styling to zoomed view
+                ax2.set_xlabel('Time (s)', fontsize=12)
+                ax2.set_ylabel(f'{quantity} Value', fontsize=12)
+                ax2.set_title(f'Zoomed View of Final Phase', fontsize=14)
+                ax2.grid(True, alpha=0.3)
+
+                # Add legend to zoomed view
+                handles, labels = ax2.get_legend_handles_labels()
+                by_label = dict(zip(labels, handles))
+                ax2.legend(by_label.values(), by_label.keys(), loc='best', fontsize=10)
+
+                # Add a box on the main plot showing the zoomed area
+                from matplotlib.patches import Rectangle
+                zoom_rect = Rectangle((zoom_start, zoom_y_min), zoom_end - zoom_start, zoom_y_max - zoom_y_min,
+                                      fill=False, edgecolor='black', linestyle=':', linewidth=1.5)
+                ax1.add_patch(zoom_rect)
+
             plt.tight_layout()
 
             # Save plot if requested
             if save_plots:
                 if output_dir is None:
                     output_dir = '.'
-                output_path = Path(output_dir) / f'{quantity}_convergence.png'
+                output_path = Path(output_dir) / f'{quantity}_convergence_with_zoom.png'
                 plt.savefig(output_path, dpi=300, bbox_inches='tight')
                 print(f"Saved plot to {output_path}")
 
@@ -1016,14 +1077,13 @@ class ConvergenceAnalyzer:
                     check_value = check["mean"]
 
                 value_difference[quantity][phase] = (end_value - original_end_value) / original_end_value * 100
-            ic(value_difference)
 
         # Plot results if requested
         if plot_results:
             self.plot_convergence(data_dict, actual_task_ranges, quantities=['Fx', 'WFT'],
                                   save_plots=save_plots, output_dir=output_dir)
 
-        return all_transitions, actual_task_ranges, time_saving
+        return all_transitions, actual_task_ranges, time_saving, value_difference
 
 
 class MultiSimulationAnalyzer:
@@ -1160,7 +1220,7 @@ class MultiSimulationAnalyzer:
             print(f"Loaded data for quantities: {', '.join(valid_data_dict.keys())}")
 
             # Analyze convergence
-            all_transitions, actual_task_ranges, time_saving = analyzer.analyze_convergence_multi_quantity(
+            all_transitions, actual_task_ranges, time_saving, value_difference = analyzer.analyze_convergence_multi_quantity(
                 valid_data_dict,
                 tasks,
                 required_convergence,
@@ -1183,7 +1243,8 @@ class MultiSimulationAnalyzer:
                 "transitions": all_transitions,
                 "task_ranges": actual_task_ranges,
                 "time_saving": sum(time_saving.values()) if time_saving else None,
-                "time_saving_percentage": sum(time_saving.values()) / total_time * 100 if time_saving and total_time else None
+                "time_saving_percentage": sum(time_saving.values()) / total_time * 100 if time_saving and total_time else None,
+                "value_difference": value_difference
             }
 
             return sim_results
@@ -1239,6 +1300,9 @@ class MultiSimulationAnalyzer:
                 output_dir=output_dir
             )
 
+            # Print final differences
+
+
             if sim_results:
                 all_results[sim_folder.name] = sim_results
 
@@ -1247,15 +1311,6 @@ class MultiSimulationAnalyzer:
         print(f"Processed {len(all_results)} simulations successfully")
         print("=" * 80)
 
-        # Calculate average time saving
-        if all_results:
-            avg_time_saving = np.mean([r["time_saving"] for r in all_results.values() if r["time_saving"] is not None])
-            avg_percentage = np.mean([r["time_saving_percentage"] for r in all_results.values()
-                                      if r["time_saving_percentage"] is not None])
-
-            print(f"Average time saving: {avg_time_saving:.2f} seconds ({avg_percentage:.2%} of total simulation time)")
-
-        self.results = all_results
         return all_results
 
     def export_results_to_csv(self, output_file="multi_simulation_results.csv"):
@@ -1362,7 +1417,7 @@ if __name__ == "__main__":
             "WFT": analyzer.load_data(f"{sim_folder}/postProcessing/wake/0/volFieldValue.dat", time_col=0, data_col=1),
         }
 
-        all_transitions, actual_task_ranges, time_saving = analyzer.analyze_convergence_multi_quantity(
+        all_transitions, actual_task_ranges, time_saving, value_difference = analyzer.analyze_convergence_multi_quantity(
             data_dict,
             tasks,
             required_convergence,
@@ -1383,7 +1438,7 @@ if __name__ == "__main__":
         results = multi_analyzer.process_all_simulations(
             tasks,
             required_convergence,
-            plot_results=False,
+            plot_results=True,
             save_plots=True,
             output_dir=output_dir
         )
