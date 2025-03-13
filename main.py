@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import matplotlib.pyplot as plt
 import os
@@ -7,6 +9,7 @@ import glob
 from collections import defaultdict
 from scipy import signal
 from pathlib import Path
+from icecream import ic
 
 
 class ConvergenceAnalyzer:
@@ -397,10 +400,6 @@ class ConvergenceAnalyzer:
         # Initialize a nested dictionary to store the data
         phase_summary = {}
 
-        # Initialize quantities we need to track
-        for quantity in ["Fx", "WFT"]:
-            phase_summary[quantity] = {}
-
         # Read the log file
         with open(log_file, 'r') as f:
             lines = f.readlines()
@@ -414,8 +413,8 @@ class ConvergenceAnalyzer:
         tokens = data_line.split()
 
         # Define tasks to look for
-        tasks = ["velocityRamp", "largeTimeStep", "reduceTimeStep",
-                 "propulsionVariation", "final", "stopJob"]
+        tasks = ["velocityRamp", "largeTimeStep",
+                 "propulsionVariation", "final"]
 
         cumulative_time = 0.0
         phase_summary = defaultdict(dict)
@@ -433,7 +432,7 @@ class ConvergenceAnalyzer:
             cumulative_time = task_end
 
             # Add task information to phase summary for each quantity
-            phase_summary['Fx'][task] = {
+            phase_summary[task] = {
                 'start_time': task_start,
                 'end_time': task_end,
                 'start_value': None,  # We don't have this info in log
@@ -446,7 +445,8 @@ class ConvergenceAnalyzer:
 
         return phase_summary
 
-    def analyze_convergence_multi_quantity(self, data_dict, tasks, required_convergence=None, phase_summary_file="watch.log"):
+    def analyze_convergence_multi_quantity(self, data_dict, tasks, required_convergence=None, phase_summary_file="watch.log",
+                                           original_results="CWBot.results"):
         """
         Analyze convergence across multiple quantities with properly implemented progressive interval
 
@@ -474,6 +474,47 @@ class ConvergenceAnalyzer:
             print(f"Warning: Could not find phase summary file: {phase_summary_file}")
             original_phase_summary = {}  # Empty dict as fallback
 
+        # load the original values from CWBot.results
+        # Load the file
+        with open(original_results, "r") as file:
+            data = json.load(file)
+
+        # Extract the tasks into a structured dictionary
+        tasks_dict = {}
+
+        for task in data["tasks"]:
+            task_name = task["name"]
+
+            # Extract actions
+            actions_completed = [action["completed"] for action in task["actions"]]
+
+            # Extract checks
+            checks = {}
+            for check in task["checks"]:
+                check_name = check["name"]
+                checks[check_name] = {
+                    "mean": check["mean"],
+                    "slope": check["slope"],
+                    "std": check["std"],
+                    "criteria": [
+                        {
+                            "name": crit["name"],
+                            "value": crit["value"],
+                            "endTime": crit["endTime"],
+                            "completed": crit["completed"],
+                        }
+                        for crit in check.get("criteria", [])
+                    ]
+                }
+
+            # Store task data
+            tasks_dict[task_name] = {
+                "startTime": task["startTime"],
+                "endTime": task["endTime"],
+                "actions_completed": actions_completed,
+                "checks": checks
+            }
+
         if required_convergence is None:
             # Default: each task requires convergence of all quantities analyzed
             required_convergence = {}
@@ -499,22 +540,25 @@ class ConvergenceAnalyzer:
             max_time = task.get('max_time', 0.0)
 
             print(f"\n=== Analyzing task: {task_name} ===")
-            print(f"  Start time: {current_time}")
+
+            if task_name == "velocityRamp":
+                current_time = 0.0
+
+            if task_name == "largeTimeStep":
+                current_time = original_phase_summary["velocityRamp"]["end_time"]
 
             # Set current time based on original phase summary if available
             if task_name == "propulsionVariation" and original_phase_summary:
                 # Check if we have the necessary data in original_phase_summary
-                if 'Fx' in original_phase_summary and 'WFT' in original_phase_summary:
-                    if 'largeTimeStep' in original_phase_summary['Fx'] and 'largeTimeStep' in original_phase_summary['WFT']:
-                        current_time = max(original_phase_summary['Fx']["largeTimeStep"]["end_time"],
-                                           original_phase_summary['WFT']["largeTimeStep"]["end_time"])
+                if 'largeTimeStep' in original_phase_summary:
+                    current_time = original_phase_summary["largeTimeStep"]["end_time"]
 
             if task_name == "final" and original_phase_summary:
                 # Check if we have the necessary data in original_phase_summary
-                if 'Fx' in original_phase_summary and 'WFT' in original_phase_summary:
-                    if 'propulsionVariation' in original_phase_summary['Fx'] and 'propulsionVariation' in original_phase_summary['WFT']:
-                        current_time = max(original_phase_summary['Fx']["propulsionVariation"]["end_time"],
-                                           original_phase_summary['WFT']["propulsionVariation"]["end_time"])
+                if 'propulsionVariation' in original_phase_summary:
+                    current_time = original_phase_summary["propulsionVariation"]["end_time"]
+
+            print(f"  Start time: {current_time}")
 
             # Record task start for each quantity
             for quantity in data_dict.keys():
@@ -527,15 +571,15 @@ class ConvergenceAnalyzer:
                 last_check_times[task_name][quantity] = current_time
 
             # Default end time
-            end_time = current_time + max_time if max_time else current_time
+            if task_name == "velocityRamp":
+                end_time = original_phase_summary["velocityRamp"]["end_time"]
+            else:
+                end_time = current_time + max_time if max_time else current_time
 
             # Store the initial task range
             actual_task_ranges[task_name] = {"start": current_time, "end": end_time}
 
-            # Special handling for reduceTimeStep (just a transition, not a convergence check)
-            if task_name == "reduceTimeStep":
-                current_time = end_time
-                continue
+
 
             # If we need to check convergence
             if all(k in task for k in ['std_limit', 'slope_limit', 'interval']):
@@ -745,10 +789,14 @@ class ConvergenceAnalyzer:
 
                 # If task converged, immediately transition to next task
                 if task_converged:
-                    print(f"  Task {task_name} converged early at {convergence_time}, skipping ahead to next task")
+                    if original_phase_summary['largeTimeStep']['end_time'] > convergence_time:
+                        print(f"  Task {task_name} converged early at {convergence_time}, skipping ahead to next task")
+                    else:
+                        print(f"  Task {task_name} converged at {convergence_time}, original end time: {original_phase_summary['largeTimeStep']['end_time']} was better")
 
                     # Update the actual end time for this task
                     actual_task_ranges[task_name]["end"] = convergence_time
+                    actual_task_ranges[task_name]["end_original"] = original_phase_summary[task_name]["end_time"]
 
                     # Record task end for each quantity at convergence time
                     for quantity in data_dict.keys():
@@ -793,18 +841,51 @@ class ConvergenceAnalyzer:
         phases = list(actual_task_ranges.keys())
 
         # Calculate time saving between consecutive phases
-        time_saving = 0
-        for i in range(len(phases) - 1):
-            current_phase = phases[i]
-            next_phase = phases[i + 1]
+        time_saving, percent_saving = {}, {}
+        for phase in phases:
+            if 'end_original' in actual_task_ranges[phase]:
+                time_saving[phase] = actual_task_ranges[phase]['end_original'] - actual_task_ranges[phase]['end']
+                percent_saving[phase] = time_saving[phase] / actual_task_ranges[phase]['end_original'] * 100
 
-            current_end = actual_task_ranges[current_phase]['end']
-            next_start = actual_task_ranges[next_phase]['start']
+        value_difference = defaultdict(dict)
+        for quantity in data_dict.keys():
+            for phase in phases:
+                times = data_dict[quantity][0]
+                values = data_dict[quantity][1]
 
-            # If next phase starts after current phase ends, that's time saved
-            if next_start > current_end:
-                time_saving += next_start - current_end
+                end_time = actual_task_ranges[phase]["end"]
+                original_end_time = original_phase_summary[phase]["end_time"]
 
+                end_idx = np.argmin(np.abs(times - end_time))
+                original_end_idx = np.argmin(np.abs(times - original_end_time))
+
+                end_value = values[end_idx]
+                original_end_value = values[original_end_idx]
+
+                #check value wrt cWBot.results
+                if quantity in tasks_dict[phase]["checks"]:
+                    check = tasks_dict[phase]["checks"][quantity]
+                    check_value = check["mean"]
+
+                value_difference[quantity][phase] = (end_value - original_end_value) / original_end_value * 100
+
+
+                # # plot the values
+                # plt.plot(times[0:end_idx], values[0:end_idx], label=quantity)
+                # plt.axvline(x=end_time, color='r', linestyle='--', label='end time')
+                # plt.axvline(x=original_end_time, color='g', linestyle='--', label='original end time')
+                # plt.axhline(y=end_value, color='b', linestyle='--', label='end value')
+                # plt.axhline(y=original_end_value, color='m', linestyle='--', label='original end value')
+                # plt.title(f"{quantity} - {phase}")
+                # plt.legend()
+                #
+                # # Set y boundaries
+                # y_min = min(end_value, original_end_value) * 0.9
+                # y_max = max(end_value, original_end_value) * 1.1
+                # plt.ylim(y_min, y_max)
+                #
+                # plt.show()
+            ic(value_difference)
         return all_transitions, actual_task_ranges, time_saving
 
 
@@ -895,10 +976,11 @@ class MultiSimulationAnalyzer:
 
         # Find CSV file (either convergence_summary.csv or original_phase_summary.csv)
         watchlog_file = None
-        for candidate in ["watch.log"]:
-            if (sim_folder / candidate).exists():
-                watchlog_file = str(sim_folder / candidate)
-                break
+        if (sim_folder / "watch.log").exists():
+            watchlog_file = str(sim_folder / "watch.log")
+
+        if (sim_folder / "CWBot.results").exists():
+            cwbot_file = str(sim_folder / "CWBot.results")
 
         if not watchlog_file:
             print(f"Warning: No summary CSV file found in {sim_folder}")
@@ -932,7 +1014,8 @@ class MultiSimulationAnalyzer:
                 valid_data_dict,
                 tasks,
                 required_convergence,
-                phase_summary_file=watchlog_file
+                phase_summary_file=watchlog_file,
+                original_results=cwbot_file
             )
 
             print(f"\nResults for simulation {sim_name}:")
@@ -1062,7 +1145,6 @@ if __name__ == "__main__":
             "oscillation_cutoff_freq": 0.2,
             "use_slope_criteria": False
         },
-        {"name": "reduceTimeStep"},
         {
             "name": "propulsionVariation",
             "max_time": 259.2,
@@ -1085,7 +1167,6 @@ if __name__ == "__main__":
             "oscillation_cutoff_freq": 0.15,
             "use_slope_criteria": False
         },
-        {"name": "stopJob"},
     ]
 
     # Define required convergence for each task
